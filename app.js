@@ -91,7 +91,7 @@ const els = {
 
 const DEFAULT_CONFIG = {
   current_business_date: todayInBangkok(),
-  checkin_mode: "manual",
+  checkin_mode: "auto",
   max_active_cards_per_room: 2,
   allow_assign_not_eligible: true,
   allow_override_confirm: false,
@@ -123,6 +123,8 @@ const state = {
   currentRoom: null,
   currentScanResult: null,
   logRows: [],
+  scanBusy: false,
+  scanAutoTimer: null,
 };
 
 init();
@@ -198,8 +200,13 @@ function bindEvents() {
   els.scanCardCode.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
+      clearTimeout(state.scanAutoTimer);
       handleScanValidate();
     }
+  });
+
+  els.scanCardCode.addEventListener("input", () => {
+    scheduleAutoScanSubmit();
   });
 
   els.refreshLogsBtn.addEventListener("click", refreshLogs);
@@ -254,13 +261,27 @@ async function ensureConfig() {
 
 async function loadSettingsFromFirestore() {
   try {
-    const snap = await getDoc(doc(state.db, "settings", "app_config"));
+    const ref = doc(state.db, "settings", "app_config");
+    const snap = await getDoc(ref);
     if (!snap.exists()) {
       throw new Error("settings/app_config not found");
     }
-    state.config = { ...DEFAULT_CONFIG, ...snap.data() };
+
+    const loaded = { ...DEFAULT_CONFIG, ...snap.data() };
+    if (loaded.checkin_mode !== "auto") {
+      loaded.checkin_mode = "auto";
+      await setDoc(ref, {
+        checkin_mode: "auto",
+        scanner_auto_submit: true,
+        default_actual_pax_mode: "use_entitled_pax",
+        updated_at: serverTimestamp(),
+        updated_by: state.operator.userId,
+      }, { merge: true });
+    }
+
+    state.config = loaded;
     applyConfigToForm();
-    setMessage(els.settingsMessage, "Settings loaded.");
+    setMessage(els.settingsMessage, "Settings loaded. Auto check-in is active.");
   } catch (error) {
     console.error(error);
     setMessage(els.settingsMessage, error.message || "Failed to load settings", true);
@@ -271,7 +292,7 @@ async function saveSettingsToFirestore() {
   try {
     const payload = {
       current_business_date: els.settingsBusinessDate.value || todayInBangkok(),
-      checkin_mode: els.settingsCheckinMode.value || "manual",
+      checkin_mode: els.settingsCheckinMode.value || "auto",
       max_active_cards_per_room: Number(els.settingsMaxCards.value || 2),
       allow_assign_not_eligible: !!els.settingsAllowAssignNotEligible.checked,
       allow_override_confirm: !!els.settingsAllowOverrideConfirm.checked,
@@ -292,13 +313,13 @@ async function saveSettingsToFirestore() {
 
 function applyConfigToForm() {
   els.settingsBusinessDate.value = state.config.current_business_date || todayInBangkok();
-  els.settingsCheckinMode.value = state.config.checkin_mode || "manual";
+  els.settingsCheckinMode.value = state.config.checkin_mode || "auto";
   els.settingsMaxCards.value = String(state.config.max_active_cards_per_room || 2);
   els.settingsAllowAssignNotEligible.checked = !!state.config.allow_assign_not_eligible;
   els.settingsAllowOverrideConfirm.checked = !!state.config.allow_override_confirm;
   els.uploadBusinessDate.value = state.config.current_business_date || todayInBangkok();
   els.logsDate.value = state.config.current_business_date || todayInBangkok();
-  els.scanModeBadge.textContent = state.config.checkin_mode || "manual";
+  els.scanModeBadge.textContent = state.config.checkin_mode || "auto";
 }
 
 function setDefaultDates() {
@@ -689,22 +710,45 @@ function resetFoForm() {
   els.foCardCode.focus();
 }
 
+function scheduleAutoScanSubmit() {
+  clearTimeout(state.scanAutoTimer);
+
+  const mode = state.config.checkin_mode || "auto";
+  const cardCode = normalizeCardCode(els.scanCardCode.value);
+  if (!state.config.scanner_auto_submit || mode !== "auto" || !cardCode || state.scanBusy) return;
+
+  state.scanAutoTimer = setTimeout(() => {
+    const latestCode = normalizeCardCode(els.scanCardCode.value);
+    if (!latestCode || state.scanBusy) return;
+    handleScanValidate();
+  }, 180);
+}
+
 async function handleScanValidate() {
+  if (state.scanBusy) return;
+
   try {
+    state.scanBusy = true;
+    clearTimeout(state.scanAutoTimer);
     if (!state.db) throw new Error("Firebase is not ready.");
     const result = await handleRestaurantScan({
       db: state.db,
       userId: state.operator.userId,
       deviceName: state.operator.deviceName,
       cardCodeInput: els.scanCardCode.value,
-      checkinMode: state.config.checkin_mode || "manual",
+      checkinMode: state.config.checkin_mode || "auto",
       actualPaxInput: els.scanActualPax.value || null,
     });
 
     state.currentScanResult = result;
     renderScanResult(result);
 
-    if (result.ok && (state.config.checkin_mode || "manual") === "manual") {
+    if (result.entitled_pax != null && !els.scanActualPax.value) {
+      const derivedPax = Number(result.actual_pax || result.entitled_pax || 0);
+      if (derivedPax > 0) els.scanActualPax.value = String(derivedPax);
+    }
+
+    if (result.ok && (state.config.checkin_mode || "auto") === "manual") {
       setMessage(els.scanMessage, "Valid. Press Confirm Check-in.");
       els.scanConfirmBtn.disabled = false;
       return;
@@ -719,13 +763,15 @@ async function handleScanValidate() {
     }
 
     await refreshLogs();
-    if ((state.config.checkin_mode || "manual") === "auto" || !result.ok) {
+    if ((state.config.checkin_mode || "auto") === "auto" || !result.ok) {
       autoResetScanInput();
     }
   } catch (error) {
     console.error(error);
     setMessage(els.scanMessage, friendlyError(error), true);
     autoResetScanInput();
+  } finally {
+    state.scanBusy = false;
   }
 }
 

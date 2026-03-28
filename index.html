@@ -179,8 +179,8 @@
                 <input type="text" id="scanCardCode" placeholder="Scan card here" />
               </label>
               <label>
-                <span>Actual Pax (optional)</span>
-                <input type="number" id="scanActualPax" min="0" step="1" placeholder="Default = entitled pax" />
+                <span>Actual Pax (auto from Daily Guest Upload)</span>
+                <input type="number" id="scanActualPax" min="0" step="1" placeholder="Auto-filled from Daily Guest Upload" />
               </label>
               <div>
                 <span class="field-label">Check-in Mode</span>
@@ -188,7 +188,7 @@
               </div>
             </div>
             <div class="button-row">
-              <button id="scanValidateBtn" class="primary">Validate / Scan</button>
+              <button id="scanValidateBtn" class="primary">Scan / Check-in</button>
               <button id="scanConfirmBtn" disabled>Confirm Check-in</button>
               <button id="scanClearBtn" class="ghost">Clear Result</button>
             </div>
