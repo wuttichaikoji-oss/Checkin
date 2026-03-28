@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Laya Breakfast Card Check-in — FO Assign</title>
+  <title>Laya Breakfast Card Check-in v2.1</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
   <script src="firebase-config.js"></script>
@@ -14,6 +14,7 @@
       <div>
         <h1>Laya Breakfast Card Check-in v2.1</h1>
         <p class="subtitle">Reusable card + daily guest upload + breakfast scan</p>
+        <p class="helper" style="margin-top:8px">Admin page: full system. FO-only page is now the default root <strong>index.html</strong>.</p>
       </div>
       <div class="status-group">
         <div class="chip" id="firebaseStatus">Firebase: not ready</div>
@@ -411,7 +412,6 @@
     </main>
   </div>
 
-  <script>window.APP_PAGE_MODE = "fo_assign";</script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

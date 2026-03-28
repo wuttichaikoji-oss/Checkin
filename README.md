@@ -65,3 +65,9 @@ The importer tries to map these headers:
   - RB / BB / HB / FB / AI / EXECUTIVE = true
 - `room_checkin_daily/{business_date_room_no}` is the main duplicate lock
 - `breakfast_logs` keeps all scan results
+
+
+## Entry pages
+- `index.html` = FO Assign only
+- `fo-assign.html` = FO Assign only (same as index)
+- `admin.html` = full system
