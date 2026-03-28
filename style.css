@@ -177,3 +177,21 @@ code{
 .live-log-row{ cursor:pointer; transition:background .15s ease, box-shadow .15s ease; }
 .live-log-row:hover td{ background:rgba(118,200,163,.08); }
 .live-log-row.is-selected td{ background:rgba(118,200,163,.16); box-shadow:inset 0 1px 0 rgba(118,200,163,.14), inset 0 -1px 0 rgba(118,200,163,.14); }
+
+
+.table-action {
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.table-action.danger {
+  border-color: rgba(255, 107, 107, 0.5);
+  color: #ff9d9d;
+}
+
+.table-action.danger:hover {
+  background: rgba(255, 107, 107, 0.12);
+}

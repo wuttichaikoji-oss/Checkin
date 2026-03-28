@@ -31,8 +31,8 @@ service cloud.firestore {
     }
 
     match /breakfast_logs/{logId} {
-      allow read, create: if signedIn();
-      allow update, delete: if false;
+      allow read, create, delete: if signedIn();
+      allow update: if false;
     }
 
     match /{document=**} {

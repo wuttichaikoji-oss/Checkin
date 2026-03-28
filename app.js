@@ -6,6 +6,7 @@ import {
   setDoc,
   updateDoc,
   addDoc,
+  deleteDoc,
   collection,
   query,
   where,
@@ -233,7 +234,8 @@ function bindEvents() {
 
   els.saveOperatorBtn.addEventListener("click", saveOperatorInfo);
 
-  els.restaurantLiveLogsBody.addEventListener("click", handleLiveLogRowClick);
+  els.restaurantLiveLogsBody.addEventListener("click", handleRestaurantLiveLogsClick);
+  els.logsBody.addEventListener("click", handleLogsTableClick);
 }
 
 async function initAuth() {
@@ -935,11 +937,20 @@ function startRestaurantLiveLogs() {
   }, (error) => {
     console.error(error);
     els.restaurantLiveStatus.textContent = "Realtime: error";
-    els.restaurantLiveLogsBody.innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(error.message || "Live log failed")}</td></tr>`;
+    els.restaurantLiveLogsBody.innerHTML = `<tr><td colspan="11" class="empty">${escapeHtml(error.message || "Live log failed")}</td></tr>`;
   });
 }
 
-function handleLiveLogRowClick(event) {
+function handleRestaurantLiveLogsClick(event) {
+  const deleteBtn = event.target.closest("[data-delete-log-id]");
+  if (deleteBtn) {
+    const logId = deleteBtn.dataset.deleteLogId || "";
+    if (logId) {
+      handleDeleteLog(logId, "live");
+    }
+    return;
+  }
+
   const rowEl = event.target.closest("tr[data-log-id]");
   if (!rowEl) return;
   const logId = rowEl.dataset.logId || "";
@@ -952,10 +963,18 @@ function handleLiveLogRowClick(event) {
   setMessage(els.scanMessage, `Showing detail from live log: ${row.card_code || row.room_no || logId}`);
 }
 
+function handleLogsTableClick(event) {
+  const deleteBtn = event.target.closest("[data-delete-log-id]");
+  if (!deleteBtn) return;
+  const logId = deleteBtn.dataset.deleteLogId || "";
+  if (!logId) return;
+  handleDeleteLog(logId, "logs");
+}
+
 function renderRestaurantLiveLogs() {
   if (!state.restaurantLiveRows.length) {
     state.selectedLiveLogId = "";
-    els.restaurantLiveLogsBody.innerHTML = `<tr><td colspan="10" class="empty">No live logs for this business date</td></tr>`;
+    els.restaurantLiveLogsBody.innerHTML = `<tr><td colspan="11" class="empty">No live logs for this business date</td></tr>`;
     return;
   }
 
@@ -977,6 +996,7 @@ function renderRestaurantLiveLogs() {
         <td>${escapeHtml(row.package || "")}</td>
         <td>${escapeHtml(row.scanned_by || "")}</td>
         <td>${escapeHtml(row.message || "")}</td>
+        <td><button class="table-action danger ghost" type="button" data-delete-log-id="${escapeHtml(row.id || "")}" title="Delete log">Delete</button></td>
       </tr>
     `;
   }).join("");
@@ -1016,13 +1036,13 @@ async function refreshLogs() {
 
 function renderLogsTable() {
   if (!state.logRows.length) {
-    els.logsBody.innerHTML = `<tr><td colspan="10" class="empty">No logs found</td></tr>`;
+    els.logsBody.innerHTML = `<tr><td colspan="11" class="empty">No logs found</td></tr>`;
     return;
   }
 
   els.logsBody.innerHTML = state.logRows.map((row) => `
     <tr>
-      <td>${escapeHtml(formatMaybeTimestamp(row.scan_time))}</td>
+      <td>${escapeHtml(formatMaybeTimestamp(row.scan_time || row.client_scan_time))}</td>
       <td>${escapeHtml(row.result || "")}</td>
       <td>${escapeHtml(row.card_code || "")}</td>
       <td>${escapeHtml(row.room_no || "")}</td>
@@ -1032,8 +1052,47 @@ function renderLogsTable() {
       <td>${escapeHtml(row.package || "")}</td>
       <td>${escapeHtml(row.scanned_by || "")}</td>
       <td>${escapeHtml(row.message || "")}</td>
+      <td><button class="table-action danger ghost" type="button" data-delete-log-id="${escapeHtml(row.id || "")}" title="Delete log">Delete</button></td>
     </tr>
   `).join("");
+}
+
+async function handleDeleteLog(logId, source = "logs") {
+  try {
+    if (!state.db) throw new Error("Firebase is not ready.");
+    const target = [...state.restaurantLiveRows, ...state.logRows].find((row) => row.id === logId) || null;
+    const summary = target?.card_code || target?.room_no || logId;
+    const ok = window.confirm(`Delete this log?
+${summary}`);
+    if (!ok) return;
+
+    await deleteDoc(doc(state.db, "breakfast_logs", logId));
+
+    state.restaurantLiveRows = state.restaurantLiveRows.filter((row) => row.id !== logId);
+    state.logRows = state.logRows.filter((row) => row.id !== logId);
+
+    if (state.selectedLiveLogId === logId) {
+      state.selectedLiveLogId = state.restaurantLiveRows[0]?.id || "";
+      const nextRow = state.restaurantLiveRows.find((row) => row.id === state.selectedLiveLogId) || null;
+      state.currentScanResult = nextRow;
+      renderScanResult(nextRow);
+    }
+
+    renderRestaurantLiveLogs();
+    renderLogsTable();
+    setMessage(els.scanMessage, `Deleted log: ${summary}`);
+    if (source === "logs") {
+      setMessage(els.settingsMessage, `Deleted log: ${summary}`);
+    }
+  } catch (error) {
+    console.error(error);
+    const msg = friendlyError(error);
+    if (source === "live") {
+      setMessage(els.scanMessage, msg, true);
+    } else {
+      setMessage(els.settingsMessage, msg, true);
+    }
+  }
 }
 
 function exportLogsCsv() {
@@ -1561,6 +1620,9 @@ async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, che
   const validation = await validateScan({ db, userId, deviceName, cardCodeInput, actualPaxInput });
 
   if (!validation.ok) {
+    if (validation.result === "room_not_found") {
+      return validation;
+    }
     const logRef = await writeScanLog(db, validation);
     return { ...validation, log_id: logRef.id };
   }
