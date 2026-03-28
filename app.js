@@ -464,6 +464,7 @@ async function importUploadRows() {
     }
 
     await batch.commit();
+    const syncedCards = await syncFoPreAssignedCardsForDate(state.db, businessDate, state.operator.userId);
     await setDoc(doc(state.db, "settings", "app_config"), {
       current_business_date: businessDate,
       updated_at: serverTimestamp(),
@@ -475,11 +476,87 @@ async function importUploadRows() {
     els.uploadBusinessDate.value = businessDate;
     startRestaurantLiveLogs();
     startGuestDailyRealtime();
-    setMessage(els.uploadMessage, `Imported ${count} guest room row(s) for ${businessDate}. Business date updated.`);
+    const syncText = syncedCards > 0
+      ? ` · Auto-updated ${syncedCards} FO Pre-Assigned card(s)`
+      : "";
+    setMessage(els.uploadMessage, `Imported ${count} guest room row(s) for ${businessDate}. Business date updated${syncText}.`);
   } catch (error) {
     console.error(error);
     setMessage(els.uploadMessage, error.message || "Import failed", true);
   }
+}
+
+async function syncFoPreAssignedCardsForDate(db, businessDate, userId) {
+  const guestSnap = await getDocs(query(
+    collection(db, "guest_daily"),
+    where("business_date", "==", businessDate),
+    limit(5000)
+  ));
+
+  if (guestSnap.empty) return 0;
+
+  const guestByRoom = new Map(
+    guestSnap.docs.map((d) => {
+      const data = d.data() || {};
+      return [normalizeRoomNo(data.room_no || ""), data];
+    }).filter(([roomNo]) => !!roomNo)
+  );
+
+  if (!guestByRoom.size) return 0;
+
+  const activeCardsSnap = await getDocs(query(
+    collection(db, "card_bindings"),
+    where("active", "==", true),
+    limit(5000)
+  ));
+
+  if (activeCardsSnap.empty) return 0;
+
+  let batch = writeBatch(db);
+  let batchOps = 0;
+  let updated = 0;
+
+  for (const cardDoc of activeCardsSnap.docs) {
+    const card = cardDoc.data() || {};
+    const roomNo = normalizeRoomNo(card.room_no || "");
+    if (!roomNo || !guestByRoom.has(roomNo)) continue;
+
+    const needsSync = card.fo_pre_assigned === true
+      || card.guest_data_pending === true
+      || card.assignment_status === "FO_PRE_ASSIGNED";
+    if (!needsSync) continue;
+
+    const guest = guestByRoom.get(roomNo);
+    batch.set(cardDoc.ref, {
+      guest_name: guest.guest_name || "",
+      pax: Number(guest.pax || 0),
+      package: guest.package || "",
+      breakfast_package: guest.breakfast_package || guest.package || "",
+      special_package: guest.special_package || "",
+      breakfast_eligible: !!guest.breakfast_eligible,
+      fo_pre_assigned: false,
+      assignment_status: "ACTIVE",
+      guest_data_pending: false,
+      business_date: businessDate,
+      updated_at: serverTimestamp(),
+      updated_by: userId,
+    }, { merge: true });
+
+    updated += 1;
+    batchOps += 1;
+
+    if (batchOps >= 400) {
+      await batch.commit();
+      batch = writeBatch(db);
+      batchOps = 0;
+    }
+  }
+
+  if (batchOps > 0) {
+    await batch.commit();
+  }
+
+  return updated;
 }
 
 async function deleteGuestDailyForDate(businessDate) {
