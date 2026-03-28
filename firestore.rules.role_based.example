@@ -1,0 +1,104 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function myUserRef() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function myUserDoc() {
+      return get(myUserRef());
+    }
+
+    function userExists() {
+      return signedIn() && exists(myUserRef());
+    }
+
+    function activeUser() {
+      return userExists() && myUserDoc().data.active == true;
+    }
+
+    function isAdmin() {
+      return activeUser() && myUserDoc().data.role == "admin";
+    }
+
+    function isManager() {
+      return activeUser() && myUserDoc().data.role == "manager";
+    }
+
+    function isFO() {
+      return activeUser() && myUserDoc().data.role == "fo";
+    }
+
+    function isRestaurant() {
+      return activeUser() && myUserDoc().data.role == "restaurant";
+    }
+
+    function canReadOps() {
+      return isAdmin() || isManager() || isFO() || isRestaurant();
+    }
+
+    function canManageGuestData() {
+      return isAdmin() || isManager();
+    }
+
+    function canManageCards() {
+      return isAdmin() || isManager() || isFO();
+    }
+
+    function canCheckIn() {
+      return isAdmin() || isManager() || isRestaurant();
+    }
+
+    match /settings/{docId} {
+      allow read: if canReadOps();
+      allow create, update: if isAdmin() || isManager();
+      allow delete: if false;
+    }
+
+    match /users/{userId} {
+      allow read: if isAdmin() || (signedIn() && request.auth.uid == userId);
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /guest_daily/{docId} {
+      allow read: if canReadOps();
+      allow create, update, delete: if canManageGuestData();
+    }
+
+    match /card_bindings/{cardCode} {
+      allow read: if canReadOps();
+      allow create, update: if canManageCards() && request.resource.data.card_code == cardCode;
+      allow delete: if false;
+    }
+
+    match /card_history/{historyId} {
+      allow read: if canReadOps();
+      allow create: if canManageCards();
+      allow update, delete: if false;
+    }
+
+    match /room_checkin_daily/{docId} {
+      allow read: if canReadOps();
+      allow create: if canCheckIn()
+        && request.resource.data.doc_id == docId
+        && request.resource.data.checked_in == true;
+      allow update, delete: if isAdmin() || isManager();
+    }
+
+    match /breakfast_logs/{logId} {
+      allow read: if canReadOps();
+      allow create: if canCheckIn();
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
