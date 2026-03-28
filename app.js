@@ -25,6 +25,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 
 const $ = (id) => document.getElementById(id);
+const PAGE_MODE = window.APP_PAGE_MODE || "full";
 
 const els = {
   firebaseStatus: $("firebaseStatus"),
@@ -150,6 +151,7 @@ function init() {
   bindTabs();
   bindEvents();
   applyOperatorToForm();
+  applyPageMode();
   setDefaultDates();
 
   if (!window.FIREBASE_CONFIG || !window.FIREBASE_CONFIG.apiKey || window.FIREBASE_CONFIG.apiKey.includes("PASTE_YOUR")) {
@@ -169,6 +171,38 @@ function init() {
     els.firebaseStatus.textContent = "Firebase: init failed";
     setMessage(els.settingsMessage, error.message || "Firebase init failed", true);
   }
+}
+
+function applyPageMode() {
+  if (PAGE_MODE !== "fo_assign") return;
+
+  document.body.classList.add("page-fo-assign");
+  document.title = "Laya Breakfast Card Check-in — FO Assign";
+
+  const titleEl = document.querySelector(".topbar h1");
+  if (titleEl) titleEl.textContent = "Laya Breakfast Card Check-in — FO Assign";
+
+  const subtitleEl = document.querySelector(".subtitle");
+  if (subtitleEl) subtitleEl.textContent = "FO only page · scan card → Room No → Enter = assign";
+
+  document.querySelectorAll(".tab").forEach((btn) => {
+    const isFoTab = btn.dataset.tab === "foTab";
+    btn.classList.toggle("active", isFoTab);
+    btn.tabIndex = isFoTab ? 0 : -1;
+  });
+
+  document.querySelectorAll(".tab-panel").forEach((panel) => {
+    panel.classList.toggle("active", panel.id === "foTab");
+  });
+
+  if (els.operatorRole) {
+    els.operatorRole.value = "fo";
+    els.operatorRole.disabled = true;
+  }
+
+  window.setTimeout(() => {
+    focusFoCardInput();
+  }, 0);
 }
 
 function bindTabs() {
@@ -1036,16 +1070,16 @@ async function handleAssignCard() {
       roomInput: els.foRoomNo.value,
       allowAssignNotEligible: state.config.allow_assign_not_eligible,
     });
-    els.foCardCode.value = result.card_code;
-    els.foRoomNo.value = result.room_no;
-    await handleSearchCard();
-    await handleSearchRoom();
+
     const baseMsg = result.assigned_as_slot === 2
       ? `Card ${result.card_code} assigned as second active card for room ${result.room_no}`
       : `Card ${result.card_code} assigned to room ${result.room_no}`;
     const msg = result.fo_pre_assigned ? `${baseMsg} · FO Pre-Assigned` : baseMsg;
-    setMessage(els.foMessage, msg);
-    focusFoCardInput();
+
+    resetFoForm({
+      keepMessage: true,
+      messageText: msg,
+    });
   } catch (error) {
     console.error(error);
     setMessage(els.foMessage, friendlyError(error), true);
@@ -1098,14 +1132,22 @@ async function handleClearCard() {
   }
 }
 
-function resetFoForm() {
+function resetFoForm(options = {}) {
+  const { keepMessage = false, messageText = "" } = options;
+
   els.foCardCode.value = "";
   els.foRoomNo.value = "";
   state.currentCard = null;
   state.currentRoom = null;
   renderCardStatus();
   renderRoomPreview();
-  setMessage(els.foMessage, "");
+
+  if (keepMessage) {
+    setMessage(els.foMessage, messageText);
+  } else {
+    setMessage(els.foMessage, "");
+  }
+
   focusFoCardInput();
 }
 

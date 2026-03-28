@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Laya Breakfast Card Check-in — FO Assign</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+  <script src="firebase-config.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>Laya Breakfast Card Check-in v2.0</h1>
+        <p class="subtitle">Reusable card + daily guest upload + breakfast scan</p>
+      </div>
+      <div class="status-group">
+        <div class="chip" id="firebaseStatus">Firebase: not ready</div>
+        <div class="chip" id="authStatus">Auth: disconnected</div>
+        <div class="chip" id="operatorStatus">Operator: -</div>
+      </div>
+    </header>
+
+    <nav class="tabbar">
+      <button class="tab active" data-tab="uploadTab">Daily Upload</button>
+      <button class="tab" data-tab="foTab">FO Assign</button>
+      <button class="tab" data-tab="restaurantTab">Restaurant Scan</button>
+      <button class="tab" data-tab="logsTab">Logs</button>
+      <button class="tab" data-tab="settingsTab">Settings</button>
+    </nav>
+
+    <main class="content">
+      <section class="tab-panel active" id="uploadTab">
+        <div class="panel-grid two">
+          <div class="card">
+            <h2>Daily Guest Upload</h2>
+            <div class="form-grid">
+              <label>
+                <span>Business Date</span>
+                <input type="date" id="uploadBusinessDate" />
+              </label>
+              <label class="full">
+                <span>Excel / CSV File</span>
+                <input type="file" id="uploadFile" accept=".xlsx,.xls,.csv" />
+              </label>
+              <label class="full checkbox-row">
+                <input type="checkbox" id="replaceTodayData" checked />
+                <span>Replace existing guest_daily records for this business date before import</span>
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="previewUploadBtn">Preview File</button>
+              <button id="importUploadBtn" class="primary">Import Data</button>
+              <button id="clearUploadPreviewBtn" class="ghost">Clear Preview</button>
+              <button id="deleteSelectedDateGuestDataBtn" class="danger" type="button">Delete Guest Data of Selected Date</button>
+            </div>
+            <p class="helper">
+              Supported columns: room / room_no, guest_name / name, pax / adults / guest_count, package / mealplan.
+            </p>
+            <div class="message" id="uploadMessage"></div>
+          </div>
+
+          <div class="card">
+            <h2>Import Summary <span class="muted-inline">(realtime by selected business date)</span></h2>
+            <div class="stats-grid">
+              <div class="stat"><strong id="statRooms">0</strong><span>Rooms</span></div>
+              <div class="stat"><strong id="statGuests">0</strong><span>Total Pax</span></div>
+              <div class="stat"><strong id="statEligible">0</strong><span>Eligible Rooms</span></div>
+              <div class="stat"><strong id="statNotEligible">0</strong><span>Not Eligible</span></div>
+            </div>
+            <div class="stats-subgrid" id="packageStats"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Preview</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Room</th>
+                  <th>Guest Name</th>
+                  <th>Pax</th>
+                  <th>Package</th>
+                  <th>Eligible</th>
+                </tr>
+              </thead>
+              <tbody id="uploadPreviewBody">
+                <tr><td colspan="6" class="empty">No preview loaded</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+<div class="card">
+  <div class="card-title-row">
+    <h2>Imported Data (Realtime)</h2>
+    <div class="inline-chip" id="importedDataStatus">Realtime: connecting...</div>
+  </div>
+  <p class="helper">ส่วนนี้ดึงข้อมูลจาก Firestore collection <strong>guest_daily</strong> ตาม Business Date โดยตรง รีเฟรชแล้วข้อมูลต้องยังอยู่ถ้า import สำเร็จ</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Room</th>
+          <th>Guest Name</th>
+          <th>Pax</th>
+          <th>Breakfast Package</th>
+          <th>Special Package</th>
+          <th>Eligible</th>
+        </tr>
+      </thead>
+      <tbody id="importedDataBody">
+        <tr><td colspan="7" class="empty">Waiting for realtime guest data...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+      </section>
+
+      <section class="tab-panel" id="foTab">
+        <div class="panel-grid two">
+          <div class="card">
+            <h2>Card + Room Input</h2>
+            <div class="form-grid">
+              <label>
+                <span>Card Code</span>
+                <input type="text" id="foCardCode" placeholder="Scan card code" />
+              </label>
+              <div class="button-stack">
+                <button id="foSearchCardBtn">Search Card</button>
+              </div>
+
+              <label>
+                <span>Room No</span>
+                <input type="text" id="foRoomNo" placeholder="A105" />
+              </label>
+              <div class="button-stack">
+                <button id="foSearchRoomBtn">Search Room</button>
+              </div>
+            </div>
+
+            <div class="button-row">
+              <button id="foAssignBtn" class="primary">Assign Card</button>
+              <button id="foReassignBtn">Reassign Card</button>
+              <button id="foClearCardBtn" class="danger">Clear Card</button>
+              <button id="foResetBtn" class="ghost">Reset Form</button>
+            </div>
+
+            <p class="helper">FO can assign card to room immediately even before Daily Guest / INH is uploaded. Rooms not found yet will be marked as <strong>FO Pre-Assigned</strong>. Fast flow: <strong>scan card → cursor jumps to Room No → type room → press Enter to assign immediately</strong>.</p>
+            <div class="message" id="foMessage"></div>
+          </div>
+
+          <div class="card">
+            <h2>Card Status</h2>
+            <div class="kv-list" id="cardStatusPanel">
+              <div><span>Card Code</span><strong>-</strong></div>
+              <div><span>Status</span><strong>-</strong></div>
+              <div><span>Current Room</span><strong>-</strong></div>
+              <div><span>Guest Name</span><strong>-</strong></div>
+              <div><span>Assigned At</span><strong>-</strong></div>
+              <div><span>Assigned By</span><strong>-</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-grid two">
+          <div class="card">
+            <h2>Room Preview</h2>
+            <div class="kv-list" id="roomPreviewPanel">
+              <div><span>Room No</span><strong>-</strong></div>
+              <div><span>Guest Name</span><strong>-</strong></div>
+              <div><span>Pax</span><strong>-</strong></div>
+              <div><span>Package</span><strong>-</strong></div>
+              <div><span>Breakfast Eligible</span><strong>-</strong></div>
+              <div><span>Checked-in Today</span><strong>-</strong></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Active Cards for This Room</h2>
+            <div class="slot-grid">
+              <div class="slot-card">
+                <span>Slot 1</span>
+                <strong id="slot1Value">-</strong>
+              </div>
+              <div class="slot-card">
+                <span>Slot 2</span>
+                <strong id="slot2Value">-</strong>
+              </div>
+            </div>
+            <p class="helper" id="slotCountText">0 / 2 active cards</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="restaurantTab">
+        <div class="panel-grid two">
+          <div class="card">
+            <h2>Ready to Scan</h2>
+            <div class="form-grid">
+              <label class="full">
+                <span>Card Code</span>
+                <input type="text" id="scanCardCode" placeholder="Scan card here" />
+              </label>
+              <label>
+                <span>Actual Pax (auto from Daily Guest Upload)</span>
+                <input type="number" id="scanActualPax" min="0" step="1" placeholder="Auto-filled from Daily Guest Upload" />
+              </label>
+              <div>
+                <span class="field-label">Check-in Mode</span>
+                <div class="mode-chip" id="scanModeBadge">-</div>
+              </div>
+            </div>
+            <div class="button-row">
+              <button id="scanValidateBtn" class="primary">Scan / Check-in</button>
+              <button id="scanConfirmBtn" disabled>Confirm Check-in</button>
+              <button id="scanClearBtn" class="ghost">Clear Result</button>
+            </div>
+            <div class="message" id="scanMessage"></div>
+          </div>
+
+          <div class="card result-card neutral" id="scanResultCard">
+            <div class="card-title-row">
+              <h2>Scan Result</h2>
+              <div class="inline-chip" id="scanResultLiveHint">latest detail</div>
+            </div>
+            <div class="result-status" id="scanResultStatus">READY</div>
+            <div class="kv-list" id="scanResultPanel">
+              <div><span>Card Code</span><strong>-</strong></div>
+              <div><span>Guest Name</span><strong>-</strong></div>
+              <div><span>Room No.</span><strong>-</strong></div>
+              <div><span>Pax</span><strong>-</strong></div>
+              <div><span>Breakfast Package</span><strong>-</strong></div>
+              <div><span>Special Package</span><strong>-</strong></div>
+              <div><span>Scan Time</span><strong>-</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title-row">
+            <h2>Live Scan Log</h2>
+            <div class="inline-chip" id="restaurantLiveStatus">Realtime: connecting...</div>
+          </div>
+          <p class="helper live-helper">รายการสแกนล่าสุดของวันจะอัปเดตอัตโนมัติทันทีหลังสแกน · กดที่แถวเพื่อดึงรายละเอียดขึ้นไปแสดงใน Scan Result</p>
+          <div class="table-wrap compact-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Result</th>
+                  <th>Card</th>
+                  <th>Room</th>
+                  <th>Guest</th>
+                  <th>Entitled</th>
+                  <th>Actual</th>
+                  <th>Package</th>
+                  <th>By</th>
+                  <th>Message</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="restaurantLiveLogsBody">
+                <tr><td colspan="11" class="empty">Waiting for live logs...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="logsTab">
+        <div class="card">
+          <h2>Breakfast Logs</h2>
+          <div class="form-grid logs-filter">
+            <label>
+              <span>Business Date</span>
+              <input type="date" id="logsDate" />
+            </label>
+            <label>
+              <span>Result Filter</span>
+              <select id="logsResultFilter">
+                <option value="">All</option>
+                <option value="checked_in">checked_in</option>
+                <option value="already_checked_in">already_checked_in</option>
+                <option value="invalid_card">invalid_card</option>
+                <option value="unassigned_card">unassigned_card</option>
+                <option value="room_not_found">room_not_found</option>
+                <option value="not_eligible">not_eligible</option>
+                <option value="manual_override">manual_override</option>
+              </select>
+            </label>
+            <label>
+              <span>Room Filter</span>
+              <input type="text" id="logsRoomFilter" placeholder="A105" />
+            </label>
+          </div>
+          <div class="button-row">
+            <button id="refreshLogsBtn">Refresh Logs</button>
+            <button id="exportLogsBtn" class="ghost">Export CSV</button>
+            <button id="deleteSelectedDateLogsBtn" class="danger" type="button">Delete Logs of Selected Date</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Result</th>
+                  <th>Card</th>
+                  <th>Room</th>
+                  <th>Guest</th>
+                  <th>Entitled</th>
+                  <th>Actual</th>
+                  <th>Package</th>
+                  <th>By</th>
+                  <th>Message</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="logsBody">
+                <tr><td colspan="11" class="empty">No logs loaded</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="settingsTab">
+        <div class="panel-grid two">
+          <div class="card">
+            <h2>App Settings</h2>
+            <div class="form-grid">
+              <label>
+                <span>Current Business Date</span>
+                <input type="date" id="settingsBusinessDate" />
+              </label>
+
+              <label>
+                <span>Check-in Mode</span>
+                <select id="settingsCheckinMode">
+                  <option value="manual">manual</option>
+                  <option value="auto">auto</option>
+                </select>
+              </label>
+
+              <label>
+                <span>Max Active Cards Per Room</span>
+                <input type="number" id="settingsMaxCards" min="1" max="5" step="1" />
+              </label>
+
+              <label class="checkbox-row full">
+                <input type="checkbox" id="settingsAllowAssignNotEligible" />
+                <span>Allow assign for not eligible rooms</span>
+              </label>
+
+              <label class="checkbox-row full">
+                <input type="checkbox" id="settingsAllowOverrideConfirm" />
+                <span>Allow override confirm</span>
+              </label>
+            </div>
+
+            <div class="button-row">
+              <button id="loadSettingsBtn">Load Settings</button>
+              <button id="saveSettingsBtn" class="primary">Save Settings</button>
+            </div>
+            <div class="message" id="settingsMessage"></div>
+          </div>
+
+          <div class="card">
+            <h2>Operator / Device</h2>
+            <div class="form-grid">
+              <label>
+                <span>Operator ID</span>
+                <input type="text" id="operatorId" placeholder="fo01" />
+              </label>
+              <label>
+                <span>Role</span>
+                <select id="operatorRole">
+                  <option value="fo">fo</option>
+                  <option value="restaurant">restaurant</option>
+                  <option value="admin">admin</option>
+                  <option value="manager">manager</option>
+                </select>
+              </label>
+              <label class="full">
+                <span>Device Name</span>
+                <input type="text" id="deviceName" placeholder="Breakfast-iPad-01" />
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="saveOperatorBtn">Save Operator Info</button>
+            </div>
+            <p class="helper">
+              Operator info is stored in this browser and written into logs / history records.
+            </p>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Deployment Notes</h2>
+          <ul class="notes-list">
+            <li>Put your Firebase config into <code>firebase-config.js</code>.</li>
+            <li>Enable Anonymous Auth in Firebase Authentication.</li>
+            <li>Use the included <code>firestore.rules</code> first, then tighten security later if needed.</li>
+            <li>Create Firestore indexes if the console asks for them.</li>
+          </ul>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>window.APP_PAGE_MODE = "fo_assign";</script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
