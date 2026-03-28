@@ -565,7 +565,11 @@ async function handleSearchRoom() {
     renderRoomPreview();
     const count = state.currentRoom.activeCards.length;
     if (!state.currentRoom.exists) {
-      setMessage(els.foMessage, "Room not found for current business date", true);
+      const hasPreAssigned = !!state.currentRoom.fo_pre_assigned || count > 0;
+      const msg = hasPreAssigned
+        ? `Daily Guest not found yet. Room ${roomNo} is currently FO Pre-Assigned. ${count} active card(s).`
+        : `Daily Guest not found yet for room ${roomNo}. FO can still assign this room as FO Pre-Assigned.`;
+      setMessage(els.foMessage, msg);
       return;
     }
 
@@ -594,6 +598,7 @@ async function searchRoomSummary(roomNo) {
 
   const checkinRef = doc(state.db, "room_checkin_daily", buildDateRoomId(businessDate, roomNo));
   const checkinSnap = await getDoc(checkinRef);
+  const hasFoPreAssigned = activeCards.some((row) => row.fo_pre_assigned === true || row.assignment_status === "FO_PRE_ASSIGNED");
 
   if (!guestSnap.exists()) {
     return {
@@ -602,9 +607,13 @@ async function searchRoomSummary(roomNo) {
       guest_name: "",
       pax: 0,
       package: "",
+      breakfast_package: "",
+      special_package: "",
       breakfast_eligible: false,
       activeCards,
       checked_in_today: checkinSnap.exists(),
+      fo_pre_assigned: hasFoPreAssigned,
+      status_label: hasFoPreAssigned ? "FO Pre-Assigned" : "Not in Daily Guest",
     };
   }
 
@@ -615,18 +624,27 @@ async function searchRoomSummary(roomNo) {
     guest_name: guest.guest_name || "",
     pax: Number(guest.pax || 0),
     package: guest.package || "",
+    breakfast_package: guest.breakfast_package || guest.package || "",
+    special_package: guest.special_package || "",
     breakfast_eligible: !!guest.breakfast_eligible,
     activeCards,
     checked_in_today: checkinSnap.exists(),
+    fo_pre_assigned: false,
+    status_label: guest.breakfast_eligible ? "Ready" : "Not Eligible",
   };
 }
 
 function renderCardStatus() {
   const data = state.currentCard;
   const panel = els.cardStatusPanel;
+  const statusText = !data
+    ? "-"
+    : data.active
+      ? (data.fo_pre_assigned === true || data.assignment_status === "FO_PRE_ASSIGNED" ? "FO PRE-ASSIGNED" : "ACTIVE")
+      : data.status || "UNASSIGNED";
   const rows = [
     ["Card Code", data?.card_code || "-"],
-    ["Status", !data ? "-" : data.active ? "ACTIVE" : data.status || "UNASSIGNED"],
+    ["Status", statusText],
     ["Current Room", data?.room_no || "-"],
     ["Guest Name", data?.guest_name || "-"],
     ["Assigned At", formatMaybeTimestamp(data?.assigned_at)],
@@ -637,13 +655,25 @@ function renderCardStatus() {
 
 function renderRoomPreview() {
   const room = state.currentRoom;
+  const statusText = !room
+    ? "-"
+    : room.exists
+      ? room.status_label || (room.breakfast_eligible ? "Ready" : "Not Eligible")
+      : room.fo_pre_assigned
+        ? "FO Pre-Assigned"
+        : "Not in Daily Guest";
+  const breakfastInfo = !room
+    ? "-"
+    : room.exists
+      ? (room.breakfast_eligible ? "Yes" : "No")
+      : "Waiting Daily Upload";
   const rows = [
     ["Room No", room?.room_no || "-"],
     ["Guest Name", room?.guest_name || "-"],
     ["Pax", room?.exists ? String(room.pax) : "-"],
-    ["Package", room?.package || "-"],
-    ["Breakfast Eligible", room ? (room.breakfast_eligible ? "Yes" : "No") : "-"],
-    ["Checked-in Today", room ? (room.checked_in_today ? "YES" : "NO") : "-"],
+    ["Breakfast Package", room?.breakfast_package || room?.package || "-"],
+    ["Status", statusText],
+    ["Breakfast Eligible", breakfastInfo],
   ];
   els.roomPreviewPanel.innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><strong>${escapeHtml(String(v))}</strong></div>`).join("");
 
@@ -666,9 +696,10 @@ async function handleAssignCard() {
     els.foRoomNo.value = result.room_no;
     await handleSearchCard();
     await handleSearchRoom();
-    const msg = result.assigned_as_slot === 2
+    const baseMsg = result.assigned_as_slot === 2
       ? `Card ${result.card_code} assigned as second active card for room ${result.room_no}`
       : `Card ${result.card_code} assigned to room ${result.room_no}`;
+    const msg = result.fo_pre_assigned ? `${baseMsg} · FO Pre-Assigned` : baseMsg;
     setMessage(els.foMessage, msg);
   } catch (error) {
     console.error(error);
@@ -689,7 +720,8 @@ async function handleReassignCard() {
     els.foRoomNo.value = result.new_room_no;
     await handleSearchCard();
     await handleSearchRoom();
-    setMessage(els.foMessage, `Card ${result.card_code} reassigned from ${result.old_room_no || "-"} to ${result.new_room_no}`);
+    const msg = `Card ${result.card_code} reassigned from ${result.old_room_no || "-"} to ${result.new_room_no}${result.fo_pre_assigned ? " · FO Pre-Assigned" : ""}`;
+    setMessage(els.foMessage, msg);
   } catch (error) {
     console.error(error);
     setMessage(els.foMessage, friendlyError(error), true);
@@ -1209,12 +1241,9 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, allowAssignN
 
     const guestRef = doc(db, "guest_daily", buildDateRoomId(businessDate, roomNo));
     const guestSnap = await tx.get(guestRef);
-    if (!guestSnap.exists()) {
-      throw makeAppError("ROOM_NOT_FOUND", "Room not found for current business date");
-    }
-    const guest = guestSnap.data();
+    const guest = guestSnap.exists() ? guestSnap.data() : null;
 
-    if (!guest.breakfast_eligible && !allowAssignNotEligible) {
+    if (guest && !guest.breakfast_eligible && !allowAssignNotEligible) {
       throw makeAppError("NOT_ELIGIBLE", "Room is not eligible for breakfast");
     }
 
@@ -1234,17 +1263,21 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, allowAssignN
       throw makeAppError("ROOM_CARD_LIMIT_REACHED", `This room already has ${maxCards} active cards. Please clear one card first.`);
     }
 
+    const isFoPreAssigned = !guest;
     const bindingData = {
       card_code: cardCode,
       active: true,
       room_no: roomNo,
       business_date: businessDate,
-      guest_name: guest.guest_name || "",
-      pax: Number(guest.pax || 0),
-      package: guest.package || "",
-      breakfast_package: guest.breakfast_package || guest.package || "",
-      special_package: guest.special_package || "",
-      breakfast_eligible: !!guest.breakfast_eligible,
+      guest_name: guest?.guest_name || "",
+      pax: Number(guest?.pax || 0),
+      package: guest?.package || "",
+      breakfast_package: guest?.breakfast_package || guest?.package || "",
+      special_package: guest?.special_package || "",
+      breakfast_eligible: guest ? !!guest.breakfast_eligible : false,
+      fo_pre_assigned: isFoPreAssigned,
+      assignment_status: isFoPreAssigned ? "FO_PRE_ASSIGNED" : "ACTIVE",
+      guest_data_pending: isFoPreAssigned,
       assigned_at: cardSnap.exists() ? cardSnap.data().assigned_at || serverTimestamp() : serverTimestamp(),
       assigned_by: cardSnap.exists() ? cardSnap.data().assigned_by || userId : userId,
       updated_at: serverTimestamp(),
@@ -1261,10 +1294,10 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, allowAssignN
       old_active: false,
       new_active: true,
       business_date: businessDate,
-      guest_name: guest.guest_name || "",
+      guest_name: guest?.guest_name || "",
       done_at: serverTimestamp(),
       done_by: userId,
-      remarks: activeCount === 0 ? "assigned as card 1" : "assigned as card 2",
+      remarks: `${activeCount === 0 ? "assigned as card 1" : "assigned as card 2"}${isFoPreAssigned ? " · FO Pre-Assigned" : ""}`,
     });
 
     return {
@@ -1273,6 +1306,7 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, allowAssignN
       card_code: cardCode,
       room_no: roomNo,
       assigned_as_slot: activeCount + 1,
+      fo_pre_assigned: isFoPreAssigned,
     };
   });
 }
@@ -1317,12 +1351,9 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, allowAssig
 
     const guestRef = doc(db, "guest_daily", buildDateRoomId(businessDate, targetRoomNo));
     const guestSnap = await tx.get(guestRef);
-    if (!guestSnap.exists()) {
-      throw makeAppError("ROOM_NOT_FOUND", "Target room not found for current business date");
-    }
-    const guest = guestSnap.data();
+    const guest = guestSnap.exists() ? guestSnap.data() : null;
 
-    if (!guest.breakfast_eligible && !allowAssignNotEligible) {
+    if (guest && !guest.breakfast_eligible && !allowAssignNotEligible) {
       throw makeAppError("NOT_ELIGIBLE", "Room is not eligible for breakfast");
     }
 
@@ -1330,17 +1361,21 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, allowAssig
       throw makeAppError("TARGET_ROOM_CARD_LIMIT_REACHED", `Cannot reassign. Target room already has ${maxCards} active cards.`);
     }
 
+    const isFoPreAssigned = !guest;
     tx.set(cardRef, {
       card_code: cardCode,
       active: true,
       room_no: targetRoomNo,
       business_date: businessDate,
-      guest_name: guest.guest_name || "",
-      pax: Number(guest.pax || 0),
-      package: guest.package || "",
-      breakfast_package: guest.breakfast_package || guest.package || "",
-      special_package: guest.special_package || "",
-      breakfast_eligible: !!guest.breakfast_eligible,
+      guest_name: guest?.guest_name || "",
+      pax: Number(guest?.pax || 0),
+      package: guest?.package || "",
+      breakfast_package: guest?.breakfast_package || guest?.package || "",
+      special_package: guest?.special_package || "",
+      breakfast_eligible: guest ? !!guest.breakfast_eligible : false,
+      fo_pre_assigned: isFoPreAssigned,
+      assignment_status: isFoPreAssigned ? "FO_PRE_ASSIGNED" : "ACTIVE",
+      guest_data_pending: isFoPreAssigned,
       assigned_at: originalAssignedAt,
       assigned_by: originalAssignedBy,
       updated_at: serverTimestamp(),
@@ -1356,10 +1391,10 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, allowAssig
       old_active: oldActive,
       new_active: true,
       business_date: businessDate,
-      guest_name: guest.guest_name || "",
+      guest_name: guest?.guest_name || "",
       done_at: serverTimestamp(),
       done_by: userId,
-      remarks: targetActiveCards.length === 0 ? "reassigned as card 1" : "reassigned as card 2",
+      remarks: `${targetActiveCards.length === 0 ? "reassigned as card 1" : "reassigned as card 2"}${isFoPreAssigned ? " · FO Pre-Assigned" : ""}`,
     });
 
     return {
@@ -1369,6 +1404,7 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, allowAssig
       old_room_no: oldRoomNo,
       new_room_no: targetRoomNo,
       assigned_as_slot: targetActiveCards.length + 1,
+      fo_pre_assigned: isFoPreAssigned,
     };
   });
 }
