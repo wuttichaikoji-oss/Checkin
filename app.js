@@ -204,6 +204,14 @@ function bindEvents() {
 
   els.refreshLogsBtn.addEventListener("click", refreshLogs);
   els.exportLogsBtn.addEventListener("click", exportLogsCsv);
+  els.logsDate.addEventListener("change", refreshLogs);
+  els.logsResultFilter.addEventListener("change", refreshLogs);
+  els.logsRoomFilter.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      refreshLogs();
+    }
+  });
 
   els.loadSettingsBtn.addEventListener("click", loadSettingsFromFirestore);
   els.saveSettingsBtn.addEventListener("click", saveSettingsToFirestore);
@@ -351,7 +359,7 @@ async function previewUploadFile() {
     const rows = await readSheetFile(file);
     state.uploadRows = normalizeUploadRows(rows);
     renderUploadPreview();
-    setMessage(els.uploadMessage, `Preview loaded: ${state.uploadRows.length} valid rows.`);
+    setMessage(els.uploadMessage, `Preview loaded: ${state.uploadRows.length} unique room row(s). Duplicate room rows were merged automatically.`);
   } catch (error) {
     console.error(error);
     setMessage(els.uploadMessage, error.message || "Failed to preview file", true);
@@ -396,9 +404,15 @@ async function importUploadRows() {
     }
 
     await batch.commit();
+    await setDoc(doc(state.db, "settings", "app_config"), {
+      current_business_date: businessDate,
+      updated_at: serverTimestamp(),
+      updated_by: state.operator.userId,
+    }, { merge: true });
+
     state.config.current_business_date = businessDate;
     applyConfigToForm();
-    setMessage(els.uploadMessage, `Imported ${count} guest rows for ${businessDate}.`);
+    setMessage(els.uploadMessage, `Imported ${count} guest room row(s) for ${businessDate}. Business date updated.`);
   } catch (error) {
     console.error(error);
     setMessage(els.uploadMessage, error.message || "Import failed", true);
@@ -485,7 +499,15 @@ async function handleSearchCard() {
 
     state.currentCard = snap.data();
     renderCardStatus();
-    setMessage(els.foMessage, "Card loaded.");
+
+    if (state.currentCard?.active && state.currentCard?.room_no) {
+      els.foRoomNo.value = state.currentCard.room_no;
+      state.currentRoom = await searchRoomSummary(state.currentCard.room_no);
+      renderRoomPreview();
+      setMessage(els.foMessage, `Card loaded. Active room: ${state.currentCard.room_no}.`);
+    } else {
+      setMessage(els.foMessage, "Card loaded.");
+    }
   } catch (error) {
     console.error(error);
     setMessage(els.foMessage, error.message || "Card search failed", true);
@@ -1113,7 +1135,7 @@ async function clearCardTx({ db, userId, cardCodeInput }) {
   });
 }
 
-async function validateScan({ db, userId, deviceName, cardCodeInput }) {
+async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxInput = null }) {
   const cardCode = normalizeCardCode(cardCodeInput);
   if (!cardCode) {
     throw makeAppError("CARD_REQUIRED", "Please scan or enter card code");
@@ -1206,7 +1228,7 @@ async function validateScan({ db, userId, deviceName, cardCodeInput }) {
   }
 
   const entitledPax = Number(guest.pax || 0);
-  const actualPax = els.scanActualPax.value ? Number(els.scanActualPax.value) : entitledPax;
+  const actualPax = parseActualPax(actualPaxInput, entitledPax);
 
   return {
     ok: true,
@@ -1301,9 +1323,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
     }
 
     const entitledPax = Number(guest.pax || 0);
-    const actualPax = actualPaxInput == null || actualPaxInput === ""
-      ? entitledPax
-      : Number(actualPaxInput || 0);
+    const actualPax = parseActualPax(actualPaxInput, entitledPax);
 
     const logRef = doc(collection(db, "breakfast_logs"));
 
@@ -1355,7 +1375,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
 }
 
 async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, checkinMode, actualPaxInput = null }) {
-  const validation = await validateScan({ db, userId, deviceName, cardCodeInput });
+  const validation = await validateScan({ db, userId, deviceName, cardCodeInput, actualPaxInput });
 
   if (!validation.ok) {
     await writeScanLog(db, validation);
@@ -1398,22 +1418,77 @@ async function readSheetFile(file) {
 }
 
 function normalizeUploadRows(rows) {
-  const normalized = [];
+  const mergedByRoom = new Map();
+
   for (const raw of rows) {
     const mapped = mapUploadRow(raw);
     if (!mapped.room_no) continue;
-    normalized.push(mapped);
+
+    const existing = mergedByRoom.get(mapped.room_no);
+    if (!existing) {
+      mergedByRoom.set(mapped.room_no, {
+        ...mapped,
+        guest_names: splitGuestNames(mapped.guest_name),
+      });
+      continue;
+    }
+
+    const mergedGuestNames = mergeGuestNameArrays(existing.guest_names, splitGuestNames(mapped.guest_name));
+    existing.guest_names = mergedGuestNames;
+    existing.guest_name = mergedGuestNames.join(" / ");
+    existing.pax = Math.max(existing.pax, mapped.pax, mergedGuestNames.length || 0);
+    existing.package = pickBetterPackage(existing.package, mapped.package);
+    existing.breakfast_eligible = existing.breakfast_eligible || mapped.breakfast_eligible;
+    existing.notes = [existing.notes, mapped.notes].filter(Boolean).join(" | ");
   }
 
-  const deduped = [];
+  return Array.from(mergedByRoom.values())
+    .map(({ guest_names, ...row }) => row)
+    .sort((a, b) => a.room_no.localeCompare(b.room_no));
+}
+
+function splitGuestNames(raw) {
+  return String(raw || "")
+    .split(/[\/;&|]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function mergeGuestNameArrays(left, right) {
   const seen = new Set();
-  for (const row of normalized) {
-    const key = row.room_no;
-    if (seen.has(key)) continue;
+  const result = [];
+  for (const name of [...(left || []), ...(right || [])]) {
+    const key = name.toUpperCase();
+    if (!key || seen.has(key)) continue;
     seen.add(key);
-    deduped.push(row);
+    result.push(name);
   }
-  return deduped;
+  return result;
+}
+
+function pickBetterPackage(a, b) {
+  return packageRank(b) > packageRank(a) ? b : a;
+}
+
+function packageRank(pkg) {
+  switch (normalizePackage(pkg)) {
+    case "EXECUTIVE":
+      return 70;
+    case "AI":
+      return 60;
+    case "FB":
+      return 50;
+    case "HB":
+      return 40;
+    case "BB":
+      return 30;
+    case "RB":
+      return 20;
+    case "RO":
+      return 10;
+    default:
+      return 15;
+  }
 }
 
 function mapUploadRow(raw) {
@@ -1473,13 +1548,13 @@ function firstDefined(obj, keys) {
 function normalizePackage(raw) {
   const value = String(raw || "").trim().toUpperCase();
   if (!value) return "RO";
-  if (["RO", "ROOM ONLY"].includes(value)) return "RO";
+  if (["RO", "ROOM ONLY", "OTARO"].includes(value)) return "RO";
   if (["RB", "ROOM BREAKFAST"].includes(value)) return "RB";
-  if (["BB", "BED BREAKFAST"].includes(value)) return "BB";
+  if (["BB", "BED BREAKFAST", "BED & BREAKFAST", "B&B"].includes(value)) return "BB";
   if (["HB", "HALF BOARD"].includes(value)) return "HB";
   if (["FB", "FULL BOARD"].includes(value)) return "FB";
   if (["AI", "AIP", "ALL INCLUSIVE"].includes(value)) return "AI";
-  if (["EXEC", "EXECUTIVE", "EXBF", "EXECUTIVE BREAKFAST"].includes(value)) return "EXECUTIVE";
+  if (["EXEC", "EXECUTIVE", "EXBF", "EXECUTIVE BREAKFAST", "EXECUTIVE BF"].includes(value)) return "EXECUTIVE";
   return value;
 }
 
@@ -1490,6 +1565,13 @@ function deriveBreakfastEligible(pkg) {
 function normalizeBoolean(value) {
   const v = String(value).trim().toLowerCase();
   return ["1", "true", "yes", "y"].includes(v);
+}
+
+function parseActualPax(raw, fallback) {
+  if (raw == null || raw === "") return Number(fallback || 0);
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num < 0) return Number(fallback || 0);
+  return Math.floor(num);
 }
 
 function buildDateRoomId(businessDate, roomNo) {

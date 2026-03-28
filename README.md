@@ -1,6 +1,15 @@
-# Laya Breakfast Card Check-in v1
+# Laya Breakfast Card Check-in v1.1
 
 Static web app for GitHub Pages + Firebase.
+
+
+## v1.1 updates
+- Daily upload now merges duplicate room rows automatically instead of silently keeping only the first row.
+- Import now also updates `settings/app_config.current_business_date` so all tabs stay on the same business date.
+- Restaurant scan now respects the Actual Pax value correctly in both validate and confirm flow.
+- FO card search now auto-loads the assigned room preview when the card is active.
+- Logs refresh automatically when date/result filter changes.
+- Package aliases improved: `OTARO -> RO`, plus extra BB / Executive Breakfast aliases.
 
 ## Features
 - Upload daily guest list from Excel/CSV
