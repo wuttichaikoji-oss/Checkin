@@ -499,14 +499,42 @@ async function deleteGuestDailyForDate(businessDate) {
   await batch.commit();
 }
 
-function renderUploadPreview() {
-  if (!state.uploadRows.length) {
-    els.uploadPreviewBody.innerHTML = `<tr><td colspan="6" class="empty">No preview loaded</td></tr>`;
+function renderImportSummaryFromRows(rows) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (!safeRows.length) {
     els.statRooms.textContent = "0";
     els.statGuests.textContent = "0";
     els.statEligible.textContent = "0";
     els.statNotEligible.textContent = "0";
     els.packageStats.innerHTML = "";
+    return;
+  }
+
+  const packages = {};
+  let totalPax = 0;
+  let eligible = 0;
+  for (const row of safeRows) {
+    const pax = Number(row.pax || row.entitled_pax || 0) || 0;
+    const pkg = String(row.breakfast_package || row.package || "UNKNOWN").trim() || "UNKNOWN";
+    totalPax += pax;
+    packages[pkg] = (packages[pkg] || 0) + 1;
+    if (row.breakfast_eligible) eligible += 1;
+  }
+
+  els.statRooms.textContent = String(safeRows.length);
+  els.statGuests.textContent = String(totalPax);
+  els.statEligible.textContent = String(eligible);
+  els.statNotEligible.textContent = String(safeRows.length - eligible);
+  els.packageStats.innerHTML = Object.entries(packages)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([pkg, qty]) => `<div class="package-chip"><span>${escapeHtml(pkg)}</span><strong>${qty}</strong></div>`)
+    .join("");
+}
+
+function renderUploadPreview() {
+  if (!state.uploadRows.length) {
+    els.uploadPreviewBody.innerHTML = `<tr><td colspan="6" class="empty">No preview loaded</td></tr>`;
+    renderImportSummaryFromRows(state.importedGuestRows);
     return;
   }
 
@@ -524,22 +552,7 @@ function renderUploadPreview() {
     `)
     .join("");
 
-  const packages = {};
-  let totalPax = 0;
-  let eligible = 0;
-  for (const row of state.uploadRows) {
-    totalPax += row.pax;
-    packages[row.package] = (packages[row.package] || 0) + 1;
-    if (row.breakfast_eligible) eligible += 1;
-  }
-  els.statRooms.textContent = String(state.uploadRows.length);
-  els.statGuests.textContent = String(totalPax);
-  els.statEligible.textContent = String(eligible);
-  els.statNotEligible.textContent = String(state.uploadRows.length - eligible);
-  els.packageStats.innerHTML = Object.entries(packages)
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([pkg, qty]) => `<div class="package-chip"><span>${escapeHtml(pkg)}</span><strong>${qty}</strong></div>`)
-    .join("");
+  renderImportSummaryFromRows(state.uploadRows);
 }
 
 
@@ -589,12 +602,18 @@ function renderImportedGuestData(errorText = "") {
   if (!els.importedDataBody) return;
   if (errorText) {
     els.importedDataBody.innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(errorText)}</td></tr>`;
+    if (!state.uploadRows.length) renderImportSummaryFromRows([]);
     return;
   }
   if (!state.importedGuestRows.length) {
     const businessDate = els.uploadBusinessDate.value || state.config.current_business_date || todayInBangkok();
     els.importedDataBody.innerHTML = `<tr><td colspan="7" class="empty">No imported guest data found for ${escapeHtml(businessDate)}</td></tr>`;
+    if (!state.uploadRows.length) renderImportSummaryFromRows([]);
     return;
+  }
+
+  if (!state.uploadRows.length) {
+    renderImportSummaryFromRows(state.importedGuestRows);
   }
 
   els.importedDataBody.innerHTML = state.importedGuestRows
