@@ -36,6 +36,7 @@ const els = {
   previewUploadBtn: $("previewUploadBtn"),
   importUploadBtn: $("importUploadBtn"),
   clearUploadPreviewBtn: $("clearUploadPreviewBtn"),
+  deleteSelectedDateGuestDataBtn: $("deleteSelectedDateGuestDataBtn"),
   uploadMessage: $("uploadMessage"),
   uploadPreviewBody: $("uploadPreviewBody"),
   importedDataStatus: $("importedDataStatus"),
@@ -137,6 +138,8 @@ const state = {
   selectedLiveLogId: "",
   liveLogUnsub: null,
   guestDailyUnsub: null,
+  midnightCleanupTimer: null,
+  midnightCleanupInterval: null,
   scanBusy: false,
   scanAutoTimer: null,
 };
@@ -186,6 +189,7 @@ function bindEvents() {
   els.previewUploadBtn.addEventListener("click", previewUploadFile);
   els.importUploadBtn.addEventListener("click", importUploadRows);
   els.clearUploadPreviewBtn.addEventListener("click", clearUploadPreview);
+  els.deleteSelectedDateGuestDataBtn.addEventListener("click", handleDeleteSelectedDateGuestData);
   els.uploadBusinessDate.addEventListener("change", handleUploadDateChange);
 
   els.foSearchCardBtn.addEventListener("click", handleSearchCard);
@@ -255,6 +259,8 @@ async function initAuth() {
       refreshOperatorChip();
       await ensureConfig();
       await loadSettingsFromFirestore();
+      await runGuestDailyCleanupIfNeeded({ forceRolloverToToday: true });
+      scheduleGuestDailyMidnightCleanup();
       await refreshLogs();
       startRestaurantLiveLogs();
       startGuestDailyRealtime();
@@ -329,6 +335,8 @@ async function saveSettingsToFirestore() {
     state.config = { ...state.config, ...payload };
     applyConfigToForm();
     startRestaurantLiveLogs();
+    startGuestDailyRealtime();
+    scheduleGuestDailyMidnightCleanup();
     setMessage(els.settingsMessage, "Settings saved.");
   } catch (error) {
     console.error(error);
@@ -486,6 +494,26 @@ async function importUploadRows() {
   }
 }
 
+async function handleDeleteSelectedDateGuestData() {
+  try {
+    if (!state.db) throw new Error("Firebase is not ready.");
+    const businessDate = els.uploadBusinessDate.value || state.config.current_business_date || todayInBangkok();
+    if (!businessDate) throw new Error("Please select business date first.");
+
+    const ok = window.confirm(`Delete all guest_daily data for ${businessDate}? This action cannot be undone.`);
+    if (!ok) return;
+
+    const deleted = await deleteGuestDailyForDate(businessDate);
+    state.uploadRows = [];
+    renderUploadPreview();
+    startGuestDailyRealtime();
+    setMessage(els.uploadMessage, `Deleted ${deleted} guest room row(s) for ${businessDate}.`);
+  } catch (error) {
+    console.error(error);
+    setMessage(els.uploadMessage, error.message || "Failed to delete selected date guest data", true);
+  }
+}
+
 async function syncFoPreAssignedCardsForDate(db, businessDate, userId) {
   const guestSnap = await getDocs(query(
     collection(db, "guest_daily"),
@@ -560,20 +588,146 @@ async function syncFoPreAssignedCardsForDate(db, businessDate, userId) {
 }
 
 async function deleteGuestDailyForDate(businessDate) {
-  const q = query(collection(state.db, "guest_daily"), where("business_date", "==", businessDate));
-  const snap = await getDocs(q);
-  if (snap.empty) return;
-  let batch = writeBatch(state.db);
-  let count = 0;
-  for (const d of snap.docs) {
-    batch.delete(d.ref);
-    count += 1;
-    if (count % 400 === 0) {
-      await batch.commit();
-      batch = writeBatch(state.db);
+  const q = query(collection(state.db, "guest_daily"), where("business_date", "==", businessDate), limit(5000));
+  let totalDeleted = 0;
+
+  while (true) {
+    const snap = await getDocs(q);
+    if (snap.empty) break;
+
+    let batch = writeBatch(state.db);
+    let batchOps = 0;
+    for (const d of snap.docs) {
+      batch.delete(d.ref);
+      batchOps += 1;
+      totalDeleted += 1;
+      if (batchOps >= 400) {
+        await batch.commit();
+        batch = writeBatch(state.db);
+        batchOps = 0;
+      }
     }
+    if (batchOps > 0) {
+      await batch.commit();
+    }
+
+    if (snap.size < 5000) break;
   }
-  await batch.commit();
+
+  return totalDeleted;
+}
+
+async function deleteGuestDailyBeforeDate(cutoffDate) {
+  if (!cutoffDate) return 0;
+  const q = query(collection(state.db, "guest_daily"), where("business_date", "<", cutoffDate), limit(5000));
+  let totalDeleted = 0;
+
+  while (true) {
+    const snap = await getDocs(q);
+    if (snap.empty) break;
+
+    let batch = writeBatch(state.db);
+    let batchOps = 0;
+    for (const d of snap.docs) {
+      batch.delete(d.ref);
+      batchOps += 1;
+      totalDeleted += 1;
+      if (batchOps >= 400) {
+        await batch.commit();
+        batch = writeBatch(state.db);
+        batchOps = 0;
+      }
+    }
+    if (batchOps > 0) {
+      await batch.commit();
+    }
+
+    if (snap.size < 5000) break;
+  }
+
+  return totalDeleted;
+}
+
+async function runGuestDailyCleanupIfNeeded({ forceRolloverToToday = false } = {}) {
+  if (!state.db) return 0;
+
+  const today = todayInBangkok();
+  const deleted = await deleteGuestDailyBeforeDate(today);
+
+  const shouldRollover = forceRolloverToToday || (state.config.current_business_date && state.config.current_business_date < today);
+  if (shouldRollover) {
+    await setDoc(doc(state.db, "settings", "app_config"), {
+      current_business_date: today,
+      updated_at: serverTimestamp(),
+      updated_by: state.operator.userId,
+    }, { merge: true });
+    state.config.current_business_date = today;
+    applyConfigToForm();
+  }
+
+  if (deleted > 0) {
+    startGuestDailyRealtime();
+    setMessage(els.uploadMessage, `Auto-cleaned ${deleted} guest room row(s) from previous day(s). Ready for ${today}.`);
+    setMessage(els.settingsMessage, `Auto-cleaned previous guest_daily data. Current business date: ${today}.`);
+  }
+
+  return deleted;
+}
+
+function bangkokTimeParts() {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Bangkok",
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(new Date());
+  const map = Object.fromEntries(parts.filter((p) => p.type !== "literal").map((p) => [p.type, p.value]));
+  return {
+    year: Number(map.year || 0),
+    month: Number(map.month || 0),
+    day: Number(map.day || 0),
+    hour: Number(map.hour || 0),
+    minute: Number(map.minute || 0),
+    second: Number(map.second || 0),
+  };
+}
+
+function msUntilNextBangkokMidnight() {
+  const now = bangkokTimeParts();
+  const secondsIntoDay = (now.hour * 3600) + (now.minute * 60) + now.second;
+  const secondsRemaining = Math.max(1, (24 * 3600) - secondsIntoDay);
+  return (secondsRemaining * 1000) + 1500;
+}
+
+function scheduleGuestDailyMidnightCleanup() {
+  clearTimeout(state.midnightCleanupTimer);
+  clearInterval(state.midnightCleanupInterval);
+
+  const arm = () => {
+    state.midnightCleanupTimer = setTimeout(async () => {
+      try {
+        await runGuestDailyCleanupIfNeeded({ forceRolloverToToday: true });
+        await refreshLogs();
+      } catch (error) {
+        console.error("Midnight guest_daily cleanup failed", error);
+      } finally {
+        arm();
+      }
+    }, msUntilNextBangkokMidnight());
+  };
+
+  arm();
+  state.midnightCleanupInterval = setInterval(async () => {
+    try {
+      await runGuestDailyCleanupIfNeeded({ forceRolloverToToday: false });
+    } catch (error) {
+      console.error("Periodic guest_daily cleanup check failed", error);
+    }
+  }, 5 * 60 * 1000);
 }
 
 function renderImportSummaryFromRows(rows) {
