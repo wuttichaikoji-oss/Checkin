@@ -202,14 +202,16 @@ function bindEvents() {
   els.foCardCode.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      handleSearchCard();
+      const cardCode = normalizeCardCode(els.foCardCode.value);
+      els.foCardCode.value = cardCode;
+      focusFoRoomInput();
     }
   });
 
   els.foRoomNo.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      handleSearchRoom();
+      handleAssignCard();
     }
   });
 
@@ -1043,6 +1045,7 @@ async function handleAssignCard() {
       : `Card ${result.card_code} assigned to room ${result.room_no}`;
     const msg = result.fo_pre_assigned ? `${baseMsg} · FO Pre-Assigned` : baseMsg;
     setMessage(els.foMessage, msg);
+    focusFoCardInput();
   } catch (error) {
     console.error(error);
     setMessage(els.foMessage, friendlyError(error), true);
@@ -1103,7 +1106,17 @@ function resetFoForm() {
   renderCardStatus();
   renderRoomPreview();
   setMessage(els.foMessage, "");
+  focusFoCardInput();
+}
+
+function focusFoCardInput() {
   els.foCardCode.focus();
+  els.foCardCode.select?.();
+}
+
+function focusFoRoomInput() {
+  els.foRoomNo.focus();
+  els.foRoomNo.select?.();
 }
 
 function scheduleAutoScanSubmit() {
