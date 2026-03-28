@@ -38,6 +38,8 @@ const els = {
   clearUploadPreviewBtn: $("clearUploadPreviewBtn"),
   uploadMessage: $("uploadMessage"),
   uploadPreviewBody: $("uploadPreviewBody"),
+  importedDataStatus: $("importedDataStatus"),
+  importedDataBody: $("importedDataBody"),
   statRooms: $("statRooms"),
   statGuests: $("statGuests"),
   statEligible: $("statEligible"),
@@ -126,6 +128,7 @@ const state = {
   config: { ...DEFAULT_CONFIG },
   operator: loadOperator(),
   uploadRows: [],
+  importedGuestRows: [],
   currentCard: null,
   currentRoom: null,
   currentScanResult: null,
@@ -133,6 +136,7 @@ const state = {
   restaurantLiveRows: [],
   selectedLiveLogId: "",
   liveLogUnsub: null,
+  guestDailyUnsub: null,
   scanBusy: false,
   scanAutoTimer: null,
 };
@@ -182,6 +186,7 @@ function bindEvents() {
   els.previewUploadBtn.addEventListener("click", previewUploadFile);
   els.importUploadBtn.addEventListener("click", importUploadRows);
   els.clearUploadPreviewBtn.addEventListener("click", clearUploadPreview);
+  els.uploadBusinessDate.addEventListener("change", handleUploadDateChange);
 
   els.foSearchCardBtn.addEventListener("click", handleSearchCard);
   els.foSearchRoomBtn.addEventListener("click", handleSearchRoom);
@@ -252,6 +257,7 @@ async function initAuth() {
       await loadSettingsFromFirestore();
       await refreshLogs();
       startRestaurantLiveLogs();
+      startGuestDailyRealtime();
       focusScanInput();
     });
   } catch (error) {
@@ -296,7 +302,9 @@ async function loadSettingsFromFirestore() {
 
     state.config = loaded;
     applyConfigToForm();
+    syncUploadDateFromConfig();
     startRestaurantLiveLogs();
+    startGuestDailyRealtime();
     setMessage(els.settingsMessage, "Settings loaded. Auto check-in is active.");
   } catch (error) {
     console.error(error);
@@ -330,6 +338,7 @@ async function saveSettingsToFirestore() {
 
 function applyConfigToForm() {
   els.settingsBusinessDate.value = state.config.current_business_date || todayInBangkok();
+  if (!els.uploadBusinessDate.value) els.uploadBusinessDate.value = state.config.current_business_date || todayInBangkok();
   els.settingsCheckinMode.value = state.config.checkin_mode || "auto";
   els.settingsMaxCards.value = String(state.config.max_active_cards_per_room || 2);
   els.settingsAllowAssignNotEligible.checked = !!state.config.allow_assign_not_eligible;
@@ -344,6 +353,17 @@ function setDefaultDates() {
   els.uploadBusinessDate.value = date;
   els.logsDate.value = date;
   els.settingsBusinessDate.value = date;
+}
+
+function syncUploadDateFromConfig() {
+  const configDate = state.config.current_business_date || todayInBangkok();
+  if (!els.uploadBusinessDate.value || els.uploadBusinessDate.value === todayInBangkok()) {
+    els.uploadBusinessDate.value = configDate;
+  }
+}
+
+function handleUploadDateChange() {
+  startGuestDailyRealtime();
 }
 
 function loadOperator() {
@@ -452,7 +472,9 @@ async function importUploadRows() {
 
     state.config.current_business_date = businessDate;
     applyConfigToForm();
+    els.uploadBusinessDate.value = businessDate;
     startRestaurantLiveLogs();
+    startGuestDailyRealtime();
     setMessage(els.uploadMessage, `Imported ${count} guest room row(s) for ${businessDate}. Business date updated.`);
   } catch (error) {
     console.error(error);
@@ -520,6 +542,76 @@ function renderUploadPreview() {
     .join("");
 }
 
+
+function startGuestDailyRealtime() {
+  if (!state.db) return;
+  if (state.guestDailyUnsub) {
+    state.guestDailyUnsub();
+    state.guestDailyUnsub = null;
+  }
+
+  const businessDate = els.uploadBusinessDate.value || state.config.current_business_date || todayInBangkok();
+  if (!businessDate) {
+    state.importedGuestRows = [];
+    renderImportedGuestData();
+    return;
+  }
+
+  if (els.importedDataStatus) {
+    els.importedDataStatus.textContent = `Realtime: ${businessDate}`;
+  }
+
+  const q = query(
+    collection(state.db, "guest_daily"),
+    where("business_date", "==", businessDate),
+    limit(2000)
+  );
+
+  state.guestDailyUnsub = onSnapshot(q, (snap) => {
+    state.importedGuestRows = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => normalizeRoomNo(a.room_no).localeCompare(normalizeRoomNo(b.room_no)));
+    renderImportedGuestData();
+    if (els.importedDataStatus) {
+      els.importedDataStatus.textContent = `Realtime: ${businessDate} · ${state.importedGuestRows.length} room(s)`;
+    }
+  }, (error) => {
+    console.error(error);
+    state.importedGuestRows = [];
+    renderImportedGuestData(error.message || "Realtime guest_daily failed");
+    if (els.importedDataStatus) {
+      els.importedDataStatus.textContent = "Realtime: error";
+    }
+  });
+}
+
+function renderImportedGuestData(errorText = "") {
+  if (!els.importedDataBody) return;
+  if (errorText) {
+    els.importedDataBody.innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(errorText)}</td></tr>`;
+    return;
+  }
+  if (!state.importedGuestRows.length) {
+    const businessDate = els.uploadBusinessDate.value || state.config.current_business_date || todayInBangkok();
+    els.importedDataBody.innerHTML = `<tr><td colspan="7" class="empty">No imported guest data found for ${escapeHtml(businessDate)}</td></tr>`;
+    return;
+  }
+
+  els.importedDataBody.innerHTML = state.importedGuestRows
+    .slice(0, 1000)
+    .map((row, idx) => `
+      <tr>
+        <td>${idx + 1}</td>
+        <td>${escapeHtml(row.room_no || "")}</td>
+        <td>${escapeHtml(row.guest_name || "")}</td>
+        <td>${Number(row.pax || 0)}</td>
+        <td>${escapeHtml(row.breakfast_package || row.package || "")}</td>
+        <td>${escapeHtml(row.special_package || "")}</td>
+        <td>${row.breakfast_eligible ? "Yes" : "No"}</td>
+      </tr>
+    `)
+    .join("");
+}
 async function handleSearchCard() {
   try {
     if (!state.db) throw new Error("Firebase is not ready.");
