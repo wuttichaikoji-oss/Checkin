@@ -129,6 +129,7 @@ const state = {
   currentScanResult: null,
   logRows: [],
   restaurantLiveRows: [],
+  selectedLiveLogId: "",
   liveLogUnsub: null,
   scanBusy: false,
   scanAutoTimer: null,
@@ -231,6 +232,8 @@ function bindEvents() {
   els.saveSettingsBtn.addEventListener("click", saveSettingsToFirestore);
 
   els.saveOperatorBtn.addEventListener("click", saveOperatorInfo);
+
+  els.restaurantLiveLogsBody.addEventListener("click", handleLiveLogRowClick);
 }
 
 async function initAuth() {
@@ -752,6 +755,7 @@ async function handleScanValidate() {
     });
 
     state.currentScanResult = result;
+    if (result?.log_id) state.selectedLiveLogId = result.log_id;
     renderScanResult(result);
 
     if (result.entitled_pax != null && !els.scanActualPax.value) {
@@ -797,6 +801,7 @@ async function handleManualConfirm() {
       actualPaxInput: els.scanActualPax.value || null,
     });
     state.currentScanResult = result;
+    if (result?.log_id) state.selectedLiveLogId = result.log_id;
     renderScanResult(result);
     els.scanConfirmBtn.disabled = true;
     setMessage(els.scanMessage, "Breakfast check-in confirmed.");
@@ -824,6 +829,7 @@ async function handleManualConfirm() {
       };
       const logRef = await writeScanLog(state.db, payload);
       payload.log_id = logRef.id;
+      state.selectedLiveLogId = payload.log_id;
       state.currentScanResult = payload;
       renderScanResult(payload);
       setMessage(els.scanMessage, payload.message, true);
@@ -866,7 +872,7 @@ function renderScanResult(result) {
 
   const status = result?.result ? result.result.toUpperCase() : "READY";
   els.scanResultStatus.textContent = status;
-  els.scanResultLiveHint.textContent = result ? "latest detail" : "waiting scan";
+  els.scanResultLiveHint.textContent = result ? "latest detail / live log" : "waiting scan";
   els.scanResultCard.classList.remove("neutral", "success", "warning", "error");
 
   if (!result) {
@@ -916,26 +922,47 @@ function startRestaurantLiveLogs() {
   });
 }
 
+function handleLiveLogRowClick(event) {
+  const rowEl = event.target.closest("tr[data-log-id]");
+  if (!rowEl) return;
+  const logId = rowEl.dataset.logId || "";
+  const row = state.restaurantLiveRows.find((item) => item.id === logId);
+  if (!row) return;
+  state.selectedLiveLogId = logId;
+  state.currentScanResult = row;
+  renderScanResult(row);
+  renderRestaurantLiveLogs();
+  setMessage(els.scanMessage, `Showing detail from live log: ${row.card_code || row.room_no || logId}`);
+}
+
 function renderRestaurantLiveLogs() {
   if (!state.restaurantLiveRows.length) {
+    state.selectedLiveLogId = "";
     els.restaurantLiveLogsBody.innerHTML = `<tr><td colspan="10" class="empty">No live logs for this business date</td></tr>`;
     return;
   }
 
-  els.restaurantLiveLogsBody.innerHTML = state.restaurantLiveRows.map((row) => `
-    <tr>
-      <td>${escapeHtml(formatMaybeTimestamp(row.scan_time))}</td>
-      <td>${escapeHtml(row.result || "")}</td>
-      <td>${escapeHtml(row.card_code || "")}</td>
-      <td>${escapeHtml(row.room_no || "")}</td>
-      <td>${escapeHtml(row.guest_name || "")}</td>
-      <td>${row.entitled_pax ?? ""}</td>
-      <td>${row.actual_pax ?? ""}</td>
-      <td>${escapeHtml(row.package || "")}</td>
-      <td>${escapeHtml(row.scanned_by || "")}</td>
-      <td>${escapeHtml(row.message || "")}</td>
-    </tr>
-  `).join("");
+  if (!state.selectedLiveLogId || !state.restaurantLiveRows.some((row) => row.id === state.selectedLiveLogId)) {
+    state.selectedLiveLogId = state.currentScanResult?.log_id || state.restaurantLiveRows[0].id || "";
+  }
+
+  els.restaurantLiveLogsBody.innerHTML = state.restaurantLiveRows.map((row) => {
+    const isSelected = row.id === state.selectedLiveLogId;
+    return `
+      <tr data-log-id="${escapeHtml(row.id || "")}" class="live-log-row${isSelected ? " is-selected" : ""}" title="Click to show in Scan Result">
+        <td>${escapeHtml(formatMaybeTimestamp(row.scan_time || row.client_scan_time))}</td>
+        <td>${escapeHtml(row.result || "")}</td>
+        <td>${escapeHtml(row.card_code || "")}</td>
+        <td>${escapeHtml(row.room_no || "")}</td>
+        <td>${escapeHtml(row.guest_name || "")}</td>
+        <td>${row.entitled_pax ?? ""}</td>
+        <td>${row.actual_pax ?? ""}</td>
+        <td>${escapeHtml(row.package || "")}</td>
+        <td>${escapeHtml(row.scanned_by || "")}</td>
+        <td>${escapeHtml(row.message || "")}</td>
+      </tr>
+    `;
+  }).join("");
 }
 
 async function refreshLogs() {
