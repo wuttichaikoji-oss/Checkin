@@ -1444,6 +1444,13 @@ function renderFoAssignLog() {
         : action === "sync"
           ? "Sync"
           : "Assign";
+    const actionClass = action === "reassign"
+      ? "action-reassign"
+      : action === "clear"
+        ? "action-clear"
+        : action === "sync"
+          ? "action-sync"
+          : "action-assign";
     const roomNo = row.new_room_no || row.room_no || row.old_room_no || "-";
     const remarks = String(row.remarks || "");
     const isFoPreAssigned = /FO Pre-Assigned/i.test(remarks);
@@ -1455,9 +1462,9 @@ function renderFoAssignLog() {
           ? "FO Pre-Assigned"
           : "Active";
     return `
-      <tr>
+      <tr class="fo-action-row ${actionClass}">
         <td>${escapeHtml(formatMaybeTimestamp(row.done_at))}</td>
-        <td>${escapeHtml(actionLabel)}</td>
+        <td><span class="fo-action-badge ${actionClass}">${escapeHtml(actionLabel)}</span></td>
         <td>${escapeHtml(row.card_code || "-")}</td>
         <td>${escapeHtml(roomNo)}</td>
         <td>${escapeHtml(row.guest_name || "-")}</td>

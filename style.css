@@ -512,3 +512,54 @@ code{
 @media (max-width: 900px){
   .page-fo-assign .fo-assign-log-card{ padding:22px; }
 }
+
+
+.fo-action-row td{
+  transition: background .15s ease, box-shadow .15s ease;
+}
+.fo-action-row.action-assign td{
+  background: rgba(42,157,87,.05);
+}
+.fo-action-row.action-reassign td{
+  background: rgba(207,154,38,.06);
+}
+.fo-action-row.action-clear td{
+  background: rgba(194,79,79,.07);
+}
+.fo-action-row.action-sync td{
+  background: rgba(79,163,194,.07);
+}
+.fo-action-row:hover td{
+  filter: brightness(1.04);
+}
+.fo-action-badge{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:92px;
+  padding:7px 12px;
+  border-radius:999px;
+  font-weight:800;
+  font-size:.88rem;
+  border:1px solid transparent;
+}
+.fo-action-badge.action-assign{
+  color:#8de2b1;
+  background:rgba(42,157,87,.14);
+  border-color:rgba(42,157,87,.34);
+}
+.fo-action-badge.action-reassign{
+  color:#f0d07b;
+  background:rgba(207,154,38,.16);
+  border-color:rgba(207,154,38,.36);
+}
+.fo-action-badge.action-clear{
+  color:#ff9d9d;
+  background:rgba(194,79,79,.16);
+  border-color:rgba(194,79,79,.38);
+}
+.fo-action-badge.action-sync{
+  color:#91ddf7;
+  background:rgba(79,163,194,.16);
+  border-color:rgba(79,163,194,.38);
+}
