@@ -886,6 +886,16 @@ function exportLogsCsv() {
   downloadTextFile(`breakfast_logs_${els.logsDate.value || todayInBangkok()}.csv`, lines.join("\n"));
 }
 
+async function getActiveCardsForRoom(db, roomNo) {
+  const q = query(
+    collection(db, "card_bindings"),
+    where("room_no", "==", roomNo),
+    where("active", "==", true)
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
 function csvCell(value) {
   const str = String(value ?? "");
   const escaped = str.replaceAll('"', '""');
@@ -898,6 +908,8 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, allowAssignN
 
   if (!cardCode) throw makeAppError("CARD_REQUIRED", "Please scan or enter card code");
   if (!roomNo) throw makeAppError("ROOM_REQUIRED", "Please enter room number");
+
+  const activeCards = await getActiveCardsForRoom(db, roomNo);
 
   return runTransaction(db, async (tx) => {
     const configRef = doc(db, "settings", "app_config");
@@ -929,13 +941,7 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, allowAssignN
       throw makeAppError("CARD_ALREADY_ASSIGNED", "This card is already assigned. Use Reassign instead.");
     }
 
-    const activeCardsQ = query(
-      collection(db, "card_bindings"),
-      where("room_no", "==", roomNo),
-      where("active", "==", true)
-    );
-    const activeCardsSnap = await tx.get(activeCardsQ);
-    const activeCount = activeCardsSnap.size;
+    const activeCount = activeCards.length;
     if (activeCount >= maxCards) {
       throw makeAppError("ROOM_CARD_LIMIT_REACHED", `This room already has ${maxCards} active cards. Please clear one card first.`);
     }
@@ -988,6 +994,8 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, allowAssig
   if (!cardCode) throw makeAppError("CARD_REQUIRED", "Please scan or enter card code");
   if (!targetRoomNo) throw makeAppError("ROOM_REQUIRED", "Please enter room number");
 
+  const targetActiveCards = (await getActiveCardsForRoom(db, targetRoomNo)).filter((row) => row.id !== cardCode);
+
   return runTransaction(db, async (tx) => {
     const configRef = doc(db, "settings", "app_config");
     const configSnap = await tx.get(configRef);
@@ -1028,15 +1036,7 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, allowAssig
       throw makeAppError("NOT_ELIGIBLE", "Room is not eligible for breakfast");
     }
 
-    const activeCardsQ = query(
-      collection(db, "card_bindings"),
-      where("room_no", "==", targetRoomNo),
-      where("active", "==", true)
-    );
-    const activeCardsSnap = await tx.get(activeCardsQ);
-    const targetActiveCardIds = activeCardsSnap.docs.map((d) => d.id).filter((id) => id !== cardCode);
-
-    if (targetActiveCardIds.length >= maxCards) {
+    if (targetActiveCards.length >= maxCards) {
       throw makeAppError("TARGET_ROOM_CARD_LIMIT_REACHED", `Cannot reassign. Target room already has ${maxCards} active cards.`);
     }
 
@@ -1067,7 +1067,7 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, allowAssig
       guest_name: guest.guest_name || "",
       done_at: serverTimestamp(),
       done_by: userId,
-      remarks: `moved from ${oldRoomNo || "-"} to ${targetRoomNo}`,
+      remarks: targetActiveCards.length === 0 ? "reassigned as card 1" : "reassigned as card 2",
     });
 
     return {
@@ -1076,6 +1076,7 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, allowAssig
       card_code: cardCode,
       old_room_no: oldRoomNo,
       new_room_no: targetRoomNo,
+      assigned_as_slot: targetActiveCards.length + 1,
     };
   });
 }
