@@ -180,10 +180,10 @@ function applyPageMode() {
   document.title = "Laya Breakfast Card Check-in — FO Assign";
 
   const titleEl = document.querySelector(".topbar h1");
-  if (titleEl) titleEl.textContent = "Laya Breakfast Card Check-in — FO Assign";
+  if (titleEl) titleEl.textContent = "Laya Breakfast Card Check-in — FO Fast Assign";
 
   const subtitleEl = document.querySelector(".subtitle");
-  if (subtitleEl) subtitleEl.textContent = "FO only page · scan card → Room No → Enter = assign";
+  if (subtitleEl) subtitleEl.textContent = "FO kiosk page · scan card → Room No → Enter = assign";
 
   document.querySelectorAll(".tab").forEach((btn) => {
     const isFoTab = btn.dataset.tab === "foTab";
@@ -1076,9 +1076,13 @@ async function handleAssignCard() {
       : `Card ${result.card_code} assigned to room ${result.room_no}`;
     const msg = result.fo_pre_assigned ? `${baseMsg} · FO Pre-Assigned` : baseMsg;
 
+    state.currentRoom = await searchRoomSummary(result.room_no);
+    renderRoomPreview();
+
     resetFoForm({
       keepMessage: true,
       messageText: msg,
+      preserveRoomState: true,
     });
   } catch (error) {
     console.error(error);
@@ -1095,12 +1099,14 @@ async function handleReassignCard() {
       roomInput: els.foRoomNo.value,
       allowAssignNotEligible: state.config.allow_assign_not_eligible,
     });
-    els.foCardCode.value = result.card_code;
-    els.foRoomNo.value = result.new_room_no;
-    await handleSearchCard();
-    await handleSearchRoom();
+    state.currentRoom = await searchRoomSummary(result.new_room_no);
+    renderRoomPreview();
     const msg = `Card ${result.card_code} reassigned from ${result.old_room_no || "-"} to ${result.new_room_no}${result.fo_pre_assigned ? " · FO Pre-Assigned" : ""}`;
-    setMessage(els.foMessage, msg);
+    resetFoForm({
+      keepMessage: true,
+      messageText: msg,
+      preserveRoomState: true,
+    });
   } catch (error) {
     console.error(error);
     setMessage(els.foMessage, friendlyError(error), true);
@@ -1133,12 +1139,12 @@ async function handleClearCard() {
 }
 
 function resetFoForm(options = {}) {
-  const { keepMessage = false, messageText = "" } = options;
+  const { keepMessage = false, messageText = "", preserveRoomState = false } = options;
 
   els.foCardCode.value = "";
   els.foRoomNo.value = "";
   state.currentCard = null;
-  state.currentRoom = null;
+  if (!preserveRoomState) state.currentRoom = null;
   renderCardStatus();
   renderRoomPreview();
 

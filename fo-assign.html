@@ -12,7 +12,7 @@
   <div class="app-shell">
     <header class="topbar">
       <div>
-        <h1>Laya Breakfast Card Check-in v2.1</h1>
+        <h1>Laya Breakfast Card Check-in v2.2</h1>
         <p class="subtitle">Reusable card + daily guest upload + breakfast scan</p>
       </div>
       <div class="status-group">
@@ -120,79 +120,93 @@
 </div>
       </section>
 
-      <section class="tab-panel" id="foTab">
-        <div class="panel-grid two">
-          <div class="card">
-            <h2>Card + Room Input</h2>
-            <div class="form-grid">
-              <label>
-                <span>Card Code</span>
-                <input type="text" id="foCardCode" placeholder="Scan card code" />
-              </label>
-              <div class="button-stack">
-                <button id="foSearchCardBtn">Search Card</button>
-              </div>
-
-              <label>
-                <span>Room No</span>
-                <input type="text" id="foRoomNo" placeholder="A105" />
-              </label>
-              <div class="button-stack">
-                <button id="foSearchRoomBtn">Search Room</button>
-              </div>
+            <section class="tab-panel" id="foTab">
+        <div class="card fo-kiosk-hero">
+          <div class="fo-kiosk-hero-row">
+            <div>
+              <div class="fo-kiosk-eyebrow">Front Office Fast Assign</div>
+              <h2>Scan card → type room number → press Enter</h2>
+              <p class="helper">FO can assign card before Daily Upload / INH arrives. If room data is not in the system yet, the card will be saved as <strong>FO Pre-Assigned</strong>.</p>
             </div>
-
-            <div class="button-row">
-              <button id="foAssignBtn" class="primary">Assign Card</button>
-              <button id="foReassignBtn">Reassign Card</button>
-              <button id="foClearCardBtn" class="danger">Clear Card</button>
-              <button id="foResetBtn" class="ghost">Reset Form</button>
-            </div>
-
-            <p class="helper">FO can assign card to room immediately even before Daily Guest / INH is uploaded. Rooms not found yet will be marked as <strong>FO Pre-Assigned</strong>. Fast flow: <strong>scan card → cursor jumps to Room No → type room → press Enter to assign immediately</strong>.</p>
-            <div class="message" id="foMessage"></div>
-          </div>
-
-          <div class="card">
-            <h2>Card Status</h2>
-            <div class="kv-list" id="cardStatusPanel">
-              <div><span>Card Code</span><strong>-</strong></div>
-              <div><span>Status</span><strong>-</strong></div>
-              <div><span>Current Room</span><strong>-</strong></div>
-              <div><span>Guest Name</span><strong>-</strong></div>
-              <div><span>Assigned At</span><strong>-</strong></div>
-              <div><span>Assigned By</span><strong>-</strong></div>
+            <div class="fo-kiosk-flow">
+              <div class="fo-flow-pill">1. Scan Card</div>
+              <div class="fo-flow-pill">2. Enter Room</div>
+              <div class="fo-flow-pill strong">3. Enter = Assign</div>
             </div>
           </div>
         </div>
 
-        <div class="panel-grid two">
-          <div class="card">
-            <h2>Room Preview</h2>
-            <div class="kv-list" id="roomPreviewPanel">
-              <div><span>Room No</span><strong>-</strong></div>
-              <div><span>Guest Name</span><strong>-</strong></div>
-              <div><span>Pax</span><strong>-</strong></div>
-              <div><span>Package</span><strong>-</strong></div>
-              <div><span>Breakfast Eligible</span><strong>-</strong></div>
-              <div><span>Checked-in Today</span><strong>-</strong></div>
+        <div class="panel-grid two fo-kiosk-grid">
+          <div class="card fo-kiosk-main">
+            <div class="card-title-row">
+              <div>
+                <div class="fo-kiosk-eyebrow">Counter Mode</div>
+                <h2>FO Assign</h2>
+              </div>
+              <div class="inline-chip fo-kiosk-chip">Fast flow</div>
+            </div>
+
+            <div class="form-grid fo-kiosk-form">
+              <label class="kiosk-field">
+                <span>Card Code</span>
+                <input type="text" id="foCardCode" placeholder="Scan card code" autocomplete="off" />
+              </label>
+              <label class="kiosk-field">
+                <span>Room No</span>
+                <input type="text" id="foRoomNo" placeholder="A105" autocomplete="off" />
+              </label>
+            </div>
+
+            <div class="button-row fo-kiosk-actions">
+              <button id="foAssignBtn" class="primary">Assign Card</button>
+              <button id="foReassignBtn">Reassign Card</button>
+              <button id="foClearCardBtn" class="danger">Clear Card</button>
+              <button id="foResetBtn" class="ghost">Reset</button>
+            </div>
+
+            <div class="message fo-kiosk-message" id="foMessage"></div>
+
+            <div class="fo-kiosk-tips">
+              <div class="fo-tip-card">
+                <strong>FO Pre-Assigned</strong>
+                <span>Use when FO assigns the card before Daily Upload is available.</span>
+              </div>
+              <div class="fo-tip-card">
+                <strong>Continuous workflow</strong>
+                <span>After success, the form clears automatically and returns to Card Code for the next scan.</span>
+              </div>
             </div>
           </div>
 
-          <div class="card">
-            <h2>Active Cards for This Room</h2>
-            <div class="slot-grid">
-              <div class="slot-card">
+          <div class="card fo-kiosk-side">
+            <div class="card-title-row">
+              <div>
+                <div class="fo-kiosk-eyebrow">Room card usage</div>
+                <h2>Active Cards for This Room</h2>
+              </div>
+              <div class="inline-chip fo-count-chip" id="slotCountText">0 / 2 active cards</div>
+            </div>
+
+            <div class="slot-grid fo-slot-grid-large">
+              <div class="slot-card fo-slot-card-large">
                 <span>Slot 1</span>
                 <strong id="slot1Value">-</strong>
               </div>
-              <div class="slot-card">
+              <div class="slot-card fo-slot-card-large">
                 <span>Slot 2</span>
                 <strong id="slot2Value">-</strong>
               </div>
             </div>
-            <p class="helper" id="slotCountText">0 / 2 active cards</p>
+
+            <p class="helper fo-side-helper">พิมพ์เลขห้องแล้วกด Enter เพื่อ Assign ทันที ระบบจะแสดงการ์ด active ล่าสุดของห้องนั้นด้านขวา</p>
           </div>
+        </div>
+
+        <div class="fo-kiosk-support" aria-hidden="true" hidden>
+          <button id="foSearchCardBtn" type="button">Search Card</button>
+          <button id="foSearchRoomBtn" type="button">Search Room</button>
+          <div id="cardStatusPanel"></div>
+          <div id="roomPreviewPanel"></div>
         </div>
       </section>
 
