@@ -578,11 +578,13 @@ async function searchRoomSummary(roomNo) {
 
   const activeCardsQ = query(
     collection(state.db, "card_bindings"),
-    where("room_no", "==", roomNo),
-    where("active", "==", true)
+    where("room_no", "==", roomNo)
   );
   const activeCardsSnap = await getDocs(activeCardsQ);
-  const activeCards = activeCardsSnap.docs.map((d) => d.data()).sort((a, b) => a.card_code.localeCompare(b.card_code));
+  const activeCards = activeCardsSnap.docs
+    .map((d) => d.data())
+    .filter((row) => row.active === true)
+    .sort((a, b) => a.card_code.localeCompare(b.card_code));
 
   const checkinRef = doc(state.db, "room_checkin_daily", buildDateRoomId(businessDate, roomNo));
   const checkinSnap = await getDoc(checkinRef);
@@ -894,6 +896,19 @@ function formatScanResultTime(result) {
   return formatMaybeTimestamp(result.scan_time || result.client_scan_time);
 }
 
+function scanTimeValue(row) {
+  const value = row?.scan_time || row?.client_scan_time;
+  if (!value) return 0;
+  if (typeof value?.toMillis === "function") return value.toMillis();
+  if (value instanceof Date) return value.getTime();
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sortByScanTimeDesc(a, b) {
+  return scanTimeValue(b) - scanTimeValue(a);
+}
+
 function startRestaurantLiveLogs() {
   if (!state.db) return;
   if (state.liveLogUnsub) {
@@ -907,12 +922,14 @@ function startRestaurantLiveLogs() {
   const q = query(
     collection(state.db, "breakfast_logs"),
     where("business_date", "==", businessDate),
-    orderBy("scan_time", "desc"),
-    limit(20)
+    limit(100)
   );
 
   state.liveLogUnsub = onSnapshot(q, (snap) => {
-    state.restaurantLiveRows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    state.restaurantLiveRows = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => sortByScanTimeDesc(a, b))
+      .slice(0, 20);
     renderRestaurantLiveLogs();
     els.restaurantLiveStatus.textContent = `Realtime: ${businessDate} · ${state.restaurantLiveRows.length} row(s)`;
   }, (error) => {
@@ -972,10 +989,12 @@ async function refreshLogs() {
     const q = query(
       collection(state.db, "breakfast_logs"),
       where("business_date", "==", businessDate),
-      orderBy("scan_time", "desc")
+      limit(500)
     );
     const snap = await getDocs(q);
-    let rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    let rows = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => sortByScanTimeDesc(a, b));
 
     const resultFilter = (els.logsResultFilter.value || "").trim();
     const roomFilter = normalizeRoomNo(els.logsRoomFilter.value || "");
@@ -1038,11 +1057,12 @@ function exportLogsCsv() {
 async function getActiveCardsForRoom(db, roomNo) {
   const q = query(
     collection(db, "card_bindings"),
-    where("room_no", "==", roomNo),
-    where("active", "==", true)
+    where("room_no", "==", roomNo)
   );
   const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .filter((row) => row.active === true);
 }
 
 function csvCell(value) {
