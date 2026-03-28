@@ -62,6 +62,8 @@ const els = {
   slot1Value: $("slot1Value"),
   slot2Value: $("slot2Value"),
   slotCountText: $("slotCountText"),
+  foAssignLogStatus: $("foAssignLogStatus"),
+  foAssignLogBody: $("foAssignLogBody"),
 
   scanCardCode: $("scanCardCode"),
   scanActualPax: $("scanActualPax"),
@@ -139,6 +141,8 @@ const state = {
   selectedLiveLogId: "",
   liveLogUnsub: null,
   guestDailyUnsub: null,
+  foAssignLogRows: [],
+  foAssignLogUnsub: null,
   midnightCleanupTimer: null,
   midnightCleanupInterval: null,
   scanBusy: false,
@@ -300,6 +304,7 @@ async function initAuth() {
       await refreshLogs();
       startRestaurantLiveLogs();
       startGuestDailyRealtime();
+      startFoAssignLogs();
       focusScanInput();
     });
   } catch (error) {
@@ -347,6 +352,7 @@ async function loadSettingsFromFirestore() {
     syncUploadDateFromConfig();
     startRestaurantLiveLogs();
     startGuestDailyRealtime();
+    startFoAssignLogs();
     setMessage(els.settingsMessage, "Settings loaded. Auto check-in is active.");
   } catch (error) {
     console.error(error);
@@ -372,6 +378,7 @@ async function saveSettingsToFirestore() {
     applyConfigToForm();
     startRestaurantLiveLogs();
     startGuestDailyRealtime();
+    startFoAssignLogs();
     scheduleGuestDailyMidnightCleanup();
     setMessage(els.settingsMessage, "Settings saved.");
   } catch (error) {
@@ -1360,6 +1367,77 @@ function scanTimeValue(row) {
 
 function sortByScanTimeDesc(a, b) {
   return scanTimeValue(b) - scanTimeValue(a);
+}
+
+function historyTimeValue(row) {
+  const value = row?.done_at;
+  if (!value) return 0;
+  if (typeof value?.toMillis === "function") return value.toMillis();
+  if (value instanceof Date) return value.getTime();
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sortByHistoryTimeDesc(a, b) {
+  return historyTimeValue(b) - historyTimeValue(a);
+}
+
+function startFoAssignLogs() {
+  if (!state.db || !els.foAssignLogBody || !els.foAssignLogStatus) return;
+  if (state.foAssignLogUnsub) {
+    state.foAssignLogUnsub();
+    state.foAssignLogUnsub = null;
+  }
+
+  const businessDate = state.config.current_business_date || todayInBangkok();
+  els.foAssignLogStatus.textContent = `Realtime: ${businessDate}`;
+
+  const q = query(
+    collection(state.db, "card_history"),
+    where("business_date", "==", businessDate),
+    limit(120)
+  );
+
+  state.foAssignLogUnsub = onSnapshot(q, (snap) => {
+    state.foAssignLogRows = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((row) => row.action === "assign" || row.action === "reassign")
+      .sort((a, b) => sortByHistoryTimeDesc(a, b));
+    els.foAssignLogStatus.textContent = `Realtime: ${businessDate} · ${state.foAssignLogRows.length} row(s)`;
+    renderFoAssignLog();
+  }, (error) => {
+    console.error(error);
+    els.foAssignLogStatus.textContent = "Realtime: error";
+    els.foAssignLogBody.innerHTML = `<tr><td colspan="7" class="empty">${escapeHtml(error.message || "Failed to load assigned card log")}</td></tr>`;
+  });
+}
+
+function renderFoAssignLog() {
+  if (!els.foAssignLogBody) return;
+
+  if (!state.foAssignLogRows.length) {
+    els.foAssignLogBody.innerHTML = '<tr><td colspan="7" class="empty">No assigned card log for this business date</td></tr>';
+    return;
+  }
+
+  els.foAssignLogBody.innerHTML = state.foAssignLogRows.slice(0, 30).map((row) => {
+    const actionLabel = row.action === "reassign" ? "Reassign" : "Assign";
+    const roomNo = row.new_room_no || row.room_no || "-";
+    const remarks = String(row.remarks || "");
+    const isFoPreAssigned = /FO Pre-Assigned/i.test(remarks);
+    const statusLabel = isFoPreAssigned ? "FO Pre-Assigned" : "Active";
+    return `
+      <tr>
+        <td>${escapeHtml(formatMaybeTimestamp(row.done_at))}</td>
+        <td>${escapeHtml(actionLabel)}</td>
+        <td>${escapeHtml(row.card_code || "-")}</td>
+        <td>${escapeHtml(roomNo)}</td>
+        <td>${escapeHtml(row.guest_name || "-")}</td>
+        <td>${escapeHtml(statusLabel)}</td>
+        <td>${escapeHtml(row.done_by || "-")}</td>
+      </tr>
+    `;
+  }).join("");
 }
 
 function startRestaurantLiveLogs() {

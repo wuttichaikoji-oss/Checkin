@@ -12,7 +12,7 @@
   <div class="app-shell">
     <header class="topbar">
       <div>
-        <h1>Laya Breakfast Card Check-in v2.2</h1>
+        <h1>Laya Breakfast Card Check-in v2.3</h1>
         <p class="subtitle">Reusable card + daily guest upload + breakfast scan</p>
       </div>
       <div class="status-group">
@@ -179,6 +179,34 @@
           <button id="foSearchRoomBtn" type="button">Search Room</button>
           <div id="cardStatusPanel"></div>
           <div id="roomPreviewPanel"></div>
+        </div>
+
+        <div class="card fo-assign-log-card">
+          <div class="card-title-row">
+            <div>
+              <div class="fo-kiosk-eyebrow">Realtime assign history</div>
+              <h2>Assigned Card Log</h2>
+            </div>
+            <div class="inline-chip" id="foAssignLogStatus">Realtime: connecting...</div>
+          </div>
+          <div class="table-wrap compact-table fo-log-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Action</th>
+                  <th>Card</th>
+                  <th>Room</th>
+                  <th>Guest</th>
+                  <th>Status</th>
+                  <th>By</th>
+                </tr>
+              </thead>
+              <tbody id="foAssignLogBody">
+                <tr><td colspan="7" class="empty">Waiting for assigned card log...</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
 
