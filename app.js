@@ -13,7 +13,9 @@ import {
   runTransaction,
   writeBatch,
   getDocs,
-  orderBy
+  orderBy,
+  onSnapshot,
+  limit
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import {
   getAuth,
@@ -66,6 +68,9 @@ const els = {
   scanResultCard: $("scanResultCard"),
   scanResultStatus: $("scanResultStatus"),
   scanResultPanel: $("scanResultPanel"),
+  scanResultLiveHint: $("scanResultLiveHint"),
+  restaurantLiveStatus: $("restaurantLiveStatus"),
+  restaurantLiveLogsBody: $("restaurantLiveLogsBody"),
 
   logsDate: $("logsDate"),
   logsResultFilter: $("logsResultFilter"),
@@ -123,6 +128,8 @@ const state = {
   currentRoom: null,
   currentScanResult: null,
   logRows: [],
+  restaurantLiveRows: [],
+  liveLogUnsub: null,
   scanBusy: false,
   scanAutoTimer: null,
 };
@@ -237,6 +244,7 @@ async function initAuth() {
       await ensureConfig();
       await loadSettingsFromFirestore();
       await refreshLogs();
+      startRestaurantLiveLogs();
       focusScanInput();
     });
   } catch (error) {
@@ -281,6 +289,7 @@ async function loadSettingsFromFirestore() {
 
     state.config = loaded;
     applyConfigToForm();
+    startRestaurantLiveLogs();
     setMessage(els.settingsMessage, "Settings loaded. Auto check-in is active.");
   } catch (error) {
     console.error(error);
@@ -304,6 +313,7 @@ async function saveSettingsToFirestore() {
     await setDoc(doc(state.db, "settings", "app_config"), payload, { merge: true });
     state.config = { ...state.config, ...payload };
     applyConfigToForm();
+    startRestaurantLiveLogs();
     setMessage(els.settingsMessage, "Settings saved.");
   } catch (error) {
     console.error(error);
@@ -433,6 +443,7 @@ async function importUploadRows() {
 
     state.config.current_business_date = businessDate;
     applyConfigToForm();
+    startRestaurantLiveLogs();
     setMessage(els.uploadMessage, `Imported ${count} guest room row(s) for ${businessDate}. Business date updated.`);
   } catch (error) {
     console.error(error);
@@ -809,8 +820,10 @@ async function handleManualConfirm() {
         message: "Room already checked in today",
         scanned_by: state.operator.userId,
         device_name: state.operator.deviceName,
+        client_scan_time: new Date().toISOString(),
       };
-      await writeScanLog(state.db, payload);
+      const logRef = await writeScanLog(state.db, payload);
+      payload.log_id = logRef.id;
       state.currentScanResult = payload;
       renderScanResult(payload);
       setMessage(els.scanMessage, payload.message, true);
@@ -835,17 +848,25 @@ function resetScanResult() {
 
 function renderScanResult(result) {
   const rows = [
+    ["Result", result?.result || "-"],
+    ["Card Code", result?.card_code || "-"],
     ["Guest Name", result?.guest_name || "-"],
     ["Room No", result?.room_no || "-"],
     ["Entitled Pax", result?.entitled_pax != null ? String(result.entitled_pax) : "-"],
     ["Actual Pax", result?.actual_pax != null ? String(result.actual_pax) : "-"],
     ["Package", result?.package || "-"],
+    ["Breakfast Eligible", result == null ? "-" : result?.breakfast_eligible ? "YES" : "NO"],
+    ["Business Date", result?.business_date || "-"],
+    ["Scan Time", formatScanResultTime(result)],
+    ["Scanned By", result?.scanned_by || "-"],
+    ["Device", result?.device_name || "-"],
     ["Message", result?.message || "-"],
   ];
   els.scanResultPanel.innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><strong>${escapeHtml(String(v))}</strong></div>`).join("");
 
   const status = result?.result ? result.result.toUpperCase() : "READY";
   els.scanResultStatus.textContent = status;
+  els.scanResultLiveHint.textContent = result ? "latest detail" : "waiting scan";
   els.scanResultCard.classList.remove("neutral", "success", "warning", "error");
 
   if (!result) {
@@ -860,6 +881,61 @@ function renderScanResult(result) {
   } else {
     els.scanResultCard.classList.add("error");
   }
+}
+
+function formatScanResultTime(result) {
+  if (!result) return "-";
+  return formatMaybeTimestamp(result.scan_time || result.client_scan_time);
+}
+
+function startRestaurantLiveLogs() {
+  if (!state.db) return;
+  if (state.liveLogUnsub) {
+    state.liveLogUnsub();
+    state.liveLogUnsub = null;
+  }
+
+  const businessDate = state.config.current_business_date || els.logsDate.value || todayInBangkok();
+  els.restaurantLiveStatus.textContent = `Realtime: ${businessDate}`;
+
+  const q = query(
+    collection(state.db, "breakfast_logs"),
+    where("business_date", "==", businessDate),
+    orderBy("scan_time", "desc"),
+    limit(20)
+  );
+
+  state.liveLogUnsub = onSnapshot(q, (snap) => {
+    state.restaurantLiveRows = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderRestaurantLiveLogs();
+    els.restaurantLiveStatus.textContent = `Realtime: ${businessDate} · ${state.restaurantLiveRows.length} row(s)`;
+  }, (error) => {
+    console.error(error);
+    els.restaurantLiveStatus.textContent = "Realtime: error";
+    els.restaurantLiveLogsBody.innerHTML = `<tr><td colspan="10" class="empty">${escapeHtml(error.message || "Live log failed")}</td></tr>`;
+  });
+}
+
+function renderRestaurantLiveLogs() {
+  if (!state.restaurantLiveRows.length) {
+    els.restaurantLiveLogsBody.innerHTML = `<tr><td colspan="10" class="empty">No live logs for this business date</td></tr>`;
+    return;
+  }
+
+  els.restaurantLiveLogsBody.innerHTML = state.restaurantLiveRows.map((row) => `
+    <tr>
+      <td>${escapeHtml(formatMaybeTimestamp(row.scan_time))}</td>
+      <td>${escapeHtml(row.result || "")}</td>
+      <td>${escapeHtml(row.card_code || "")}</td>
+      <td>${escapeHtml(row.room_no || "")}</td>
+      <td>${escapeHtml(row.guest_name || "")}</td>
+      <td>${row.entitled_pax ?? ""}</td>
+      <td>${row.actual_pax ?? ""}</td>
+      <td>${escapeHtml(row.package || "")}</td>
+      <td>${escapeHtml(row.scanned_by || "")}</td>
+      <td>${escapeHtml(row.message || "")}</td>
+    </tr>
+  `).join("");
 }
 
 async function refreshLogs() {
@@ -1232,6 +1308,7 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
       message: "Assigned room not found in today's guest list",
       scanned_by: userId,
       device_name: deviceName,
+      client_scan_time: new Date().toISOString(),
     };
   }
 
@@ -1251,6 +1328,7 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
       message: "Room is not eligible for breakfast",
       scanned_by: userId,
       device_name: deviceName,
+      client_scan_time: new Date().toISOString(),
     };
   }
 
@@ -1271,6 +1349,7 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
       message: "Room already checked in today",
       scanned_by: userId,
       device_name: deviceName,
+      client_scan_time: new Date().toISOString(),
     };
   }
 
@@ -1291,6 +1370,7 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
     message: "Ready for breakfast check-in",
     scanned_by: userId,
     device_name: deviceName,
+    client_scan_time: new Date().toISOString(),
   };
 }
 
@@ -1309,13 +1389,15 @@ function invalidResult({ result, businessDate, cardCode, message, userId, device
     message,
     scanned_by: userId,
     device_name: deviceName,
+    client_scan_time: new Date().toISOString(),
   };
 }
 
 async function writeScanLog(db, payload) {
-  return addDoc(collection(db, "breakfast_logs"), {
+  const ref = await addDoc(collection(db, "breakfast_logs"), {
     business_date: payload.business_date || "",
     scan_time: serverTimestamp(),
+    client_scan_time: payload.client_scan_time || new Date().toISOString(),
     card_code: payload.card_code || "",
     room_no: payload.room_no || "",
     guest_name: payload.guest_name || "",
@@ -1328,6 +1410,7 @@ async function writeScanLog(db, payload) {
     device_name: payload.device_name || "",
     scanned_by: payload.scanned_by || "",
   });
+  return ref;
 }
 
 async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualPaxInput = null }) {
@@ -1393,6 +1476,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
     tx.set(logRef, {
       business_date: businessDate,
       scan_time: serverTimestamp(),
+      client_scan_time: new Date().toISOString(),
       card_code: cardCode,
       room_no: roomNo,
       guest_name: guest.guest_name || "",
@@ -1409,12 +1493,17 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
     return {
       ok: true,
       result: "checked_in",
+      business_date: businessDate,
       card_code: cardCode,
       room_no: roomNo,
       guest_name: guest.guest_name || "",
       entitled_pax: entitledPax,
       actual_pax: actualPax,
       package: guest.package || "",
+      breakfast_eligible: true,
+      scanned_by: userId,
+      device_name: deviceName,
+      client_scan_time: new Date().toISOString(),
       message: "Breakfast check-in confirmed",
       log_id: logRef.id,
     };
@@ -1425,8 +1514,8 @@ async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, che
   const validation = await validateScan({ db, userId, deviceName, cardCodeInput, actualPaxInput });
 
   if (!validation.ok) {
-    await writeScanLog(db, validation);
-    return validation;
+    const logRef = await writeScanLog(db, validation);
+    return { ...validation, log_id: logRef.id };
   }
 
   if (checkinMode === "manual") {
@@ -1443,8 +1532,8 @@ async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, che
         result: "already_checked_in",
         message: "Room already checked in today",
       };
-      await writeScanLog(db, alreadyPayload);
-      return alreadyPayload;
+      const logRef = await writeScanLog(db, alreadyPayload);
+      return { ...alreadyPayload, log_id: logRef.id };
     }
     throw error;
   }

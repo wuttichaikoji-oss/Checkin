@@ -160,3 +160,15 @@ code{
   .panel-grid.two, .form-grid, .stats-grid{ grid-template-columns:1fr; }
   .button-stack{ align-items:stretch; }
 }
+
+.card-title-row{
+  display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px;
+}
+.card-title-row h2{ margin-bottom:0; }
+.inline-chip{
+  display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px;
+  background:#10201a; border:1px solid var(--line); color:var(--accent-2); font-size:.86rem; font-weight:700;
+}
+.live-helper{ margin-top:0; margin-bottom:12px; }
+.compact-table table{ min-width:1100px; }
+.compact-table th, .compact-table td{ padding:10px 12px; }

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Laya Breakfast Card Check-in v1.1</title>
+  <title>Laya Breakfast Card Check-in v1.2</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
   <script src="firebase-config.js"></script>
@@ -12,7 +12,7 @@
   <div class="app-shell">
     <header class="topbar">
       <div>
-        <h1>Laya Breakfast Card Check-in v1.1</h1>
+        <h1>Laya Breakfast Card Check-in v1.2</h1>
         <p class="subtitle">Reusable card + daily guest upload + breakfast scan</p>
       </div>
       <div class="status-group">
@@ -196,16 +196,55 @@
           </div>
 
           <div class="card result-card neutral" id="scanResultCard">
-            <h2>Scan Result</h2>
+            <div class="card-title-row">
+              <h2>Scan Result</h2>
+              <div class="inline-chip" id="scanResultLiveHint">latest detail</div>
+            </div>
             <div class="result-status" id="scanResultStatus">READY</div>
             <div class="kv-list" id="scanResultPanel">
+              <div><span>Result</span><strong>-</strong></div>
+              <div><span>Card Code</span><strong>-</strong></div>
               <div><span>Guest Name</span><strong>-</strong></div>
               <div><span>Room No</span><strong>-</strong></div>
               <div><span>Entitled Pax</span><strong>-</strong></div>
               <div><span>Actual Pax</span><strong>-</strong></div>
               <div><span>Package</span><strong>-</strong></div>
+              <div><span>Breakfast Eligible</span><strong>-</strong></div>
+              <div><span>Business Date</span><strong>-</strong></div>
+              <div><span>Scan Time</span><strong>-</strong></div>
+              <div><span>Scanned By</span><strong>-</strong></div>
+              <div><span>Device</span><strong>-</strong></div>
               <div><span>Message</span><strong>-</strong></div>
             </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title-row">
+            <h2>Live Scan Log</h2>
+            <div class="inline-chip" id="restaurantLiveStatus">Realtime: connecting...</div>
+          </div>
+          <p class="helper live-helper">รายการสแกนล่าสุดของวันจะอัปเดตอัตโนมัติทันทีหลังสแกน</p>
+          <div class="table-wrap compact-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Result</th>
+                  <th>Card</th>
+                  <th>Room</th>
+                  <th>Guest</th>
+                  <th>Entitled</th>
+                  <th>Actual</th>
+                  <th>Package</th>
+                  <th>By</th>
+                  <th>Message</th>
+                </tr>
+              </thead>
+              <tbody id="restaurantLiveLogsBody">
+                <tr><td colspan="10" class="empty">Waiting for live logs...</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </section>
