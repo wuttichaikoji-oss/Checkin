@@ -180,10 +180,10 @@ function applyPageMode() {
   document.title = "Laya Breakfast Card Check-in — FO Assign";
 
   const titleEl = document.querySelector(".topbar h1");
-  if (titleEl) titleEl.textContent = "Laya Breakfast Card Check-in — FO Fast Assign";
+  if (titleEl) titleEl.textContent = "Laya Breakfast Card Check-in";
 
   const subtitleEl = document.querySelector(".subtitle");
-  if (subtitleEl) subtitleEl.textContent = "FO kiosk page · scan card → Room No → Enter = assign";
+  if (subtitleEl) subtitleEl.textContent = "Front Office Fast Assign";
 
   document.querySelectorAll(".tab").forEach((btn) => {
     const isFoTab = btn.dataset.tab === "foTab";
