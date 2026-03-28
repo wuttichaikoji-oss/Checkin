@@ -1704,7 +1704,8 @@ async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, che
   const validation = await validateScan({ db, userId, deviceName, cardCodeInput, actualPaxInput });
 
   if (!validation.ok) {
-    if (validation.result === "room_not_found") {
+    const shouldSkipLog = !normalizeRoomNo(validation.room_no) || validation.result === "room_not_found";
+    if (shouldSkipLog) {
       return validation;
     }
     const logRef = await writeScanLog(db, validation);
