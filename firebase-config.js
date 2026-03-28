@@ -1,11 +1,12 @@
 // Copy this file, fill your real Firebase config, and keep the filename as firebase-config.js
-window.FIREBASE_CONFIG = {
-  apiKey: "PASTE_YOUR_API_KEY",
-  authDomain: "PASTE_YOUR_AUTH_DOMAIN",
-  projectId: "PASTE_YOUR_PROJECT_ID",
-  storageBucket: "PASTE_YOUR_STORAGE_BUCKET",
-  messagingSenderId: "PASTE_YOUR_MESSAGING_SENDER_ID",
-  appId: "PASTE_YOUR_APP_ID"
+const firebaseConfig = {
+  apiKey: "AIzaSyBV64yW94kMyrjw_BRvPyyFlCdK8KEsJQY",
+  authDomain: "moringcard.firebaseapp.com",
+  projectId: "moringcard",
+  storageBucket: "moringcard.firebasestorage.app",
+  messagingSenderId: "281984975461",
+  appId: "1:281984975461:web:7302964312085875553c8c",
+  measurementId: "G-8V49S3LXYJID"
 };
 
 window.APP_DEFAULT_OPERATOR = {
