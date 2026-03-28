@@ -613,8 +613,23 @@ async function syncFoPreAssignedCardsForDate(db, businessDate, userId) {
       updated_by: userId,
     }, { merge: true });
 
+    const historyRef = doc(collection(db, "card_history"));
+    batch.set(historyRef, {
+      action: "sync",
+      card_code: card.card_code || cardDoc.id,
+      old_room_no: roomNo,
+      new_room_no: roomNo,
+      old_active: !!card.active,
+      new_active: !!card.active,
+      business_date: businessDate,
+      guest_name: guest.guest_name || "",
+      done_at: serverTimestamp(),
+      done_by: userId,
+      remarks: "Daily Upload synced guest data",
+    });
+
     updated += 1;
-    batchOps += 1;
+    batchOps += 2;
 
     if (batchOps >= 400) {
       await batch.commit();
@@ -1401,7 +1416,7 @@ function startFoAssignLogs() {
   state.foAssignLogUnsub = onSnapshot(q, (snap) => {
     state.foAssignLogRows = snap.docs
       .map((d) => ({ id: d.id, ...d.data() }))
-      .filter((row) => row.action === "assign" || row.action === "reassign")
+      .filter((row) => ["assign", "reassign", "clear", "sync"].includes(String(row.action || "").toLowerCase()))
       .sort((a, b) => sortByHistoryTimeDesc(a, b));
     els.foAssignLogStatus.textContent = `Realtime: ${businessDate} · ${state.foAssignLogRows.length} row(s)`;
     renderFoAssignLog();
@@ -1416,16 +1431,29 @@ function renderFoAssignLog() {
   if (!els.foAssignLogBody) return;
 
   if (!state.foAssignLogRows.length) {
-    els.foAssignLogBody.innerHTML = '<tr><td colspan="7" class="empty">No assigned card log for this business date</td></tr>';
+    els.foAssignLogBody.innerHTML = '<tr><td colspan="7" class="empty">No card action log for this business date</td></tr>';
     return;
   }
 
-  els.foAssignLogBody.innerHTML = state.foAssignLogRows.slice(0, 30).map((row) => {
-    const actionLabel = row.action === "reassign" ? "Reassign" : "Assign";
-    const roomNo = row.new_room_no || row.room_no || "-";
+  els.foAssignLogBody.innerHTML = state.foAssignLogRows.slice(0, 50).map((row) => {
+    const action = String(row.action || "").toLowerCase();
+    const actionLabel = action === "reassign"
+      ? "Reassign"
+      : action === "clear"
+        ? "Clear"
+        : action === "sync"
+          ? "Sync"
+          : "Assign";
+    const roomNo = row.new_room_no || row.room_no || row.old_room_no || "-";
     const remarks = String(row.remarks || "");
     const isFoPreAssigned = /FO Pre-Assigned/i.test(remarks);
-    const statusLabel = isFoPreAssigned ? "FO Pre-Assigned" : "Active";
+    const statusLabel = action === "clear"
+      ? "Cleared"
+      : action === "sync"
+        ? "Synced"
+        : isFoPreAssigned
+          ? "FO Pre-Assigned"
+          : "Active";
     return `
       <tr>
         <td>${escapeHtml(formatMaybeTimestamp(row.done_at))}</td>
