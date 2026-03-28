@@ -78,6 +78,7 @@ const els = {
   logsRoomFilter: $("logsRoomFilter"),
   refreshLogsBtn: $("refreshLogsBtn"),
   exportLogsBtn: $("exportLogsBtn"),
+  deleteSelectedDateLogsBtn: $("deleteSelectedDateLogsBtn"),
   logsBody: $("logsBody"),
 
   settingsBusinessDate: $("settingsBusinessDate"),
@@ -220,6 +221,7 @@ function bindEvents() {
 
   els.refreshLogsBtn.addEventListener("click", refreshLogs);
   els.exportLogsBtn.addEventListener("click", exportLogsCsv);
+  els.deleteSelectedDateLogsBtn.addEventListener("click", handleDeleteSelectedDateLogs);
   els.logsDate.addEventListener("change", refreshLogs);
   els.logsResultFilter.addEventListener("change", refreshLogs);
   els.logsRoomFilter.addEventListener("keydown", (e) => {
@@ -426,6 +428,8 @@ async function importUploadRows() {
         guest_name: row.guest_name,
         pax: row.pax,
         package: row.package,
+        breakfast_package: row.breakfast_package || row.package,
+        special_package: row.special_package || "",
         breakfast_eligible: row.breakfast_eligible,
         source: "daily_upload",
         uploaded_at: serverTimestamp(),
@@ -825,6 +829,8 @@ async function handleManualConfirm() {
         entitled_pax: state.currentScanResult?.entitled_pax || 0,
         actual_pax: state.currentScanResult?.actual_pax || 0,
         package: state.currentScanResult?.package || "",
+        breakfast_package: state.currentScanResult?.breakfast_package || state.currentScanResult?.package || "",
+        special_package: state.currentScanResult?.special_package || "",
         breakfast_eligible: true,
         message: "Room already checked in today",
         scanned_by: state.operator.userId,
@@ -858,19 +864,13 @@ function resetScanResult() {
 
 function renderScanResult(result) {
   const rows = [
-    ["Result", result?.result || "-"],
     ["Card Code", result?.card_code || "-"],
     ["Guest Name", result?.guest_name || "-"],
-    ["Room No", result?.room_no || "-"],
-    ["Entitled Pax", result?.entitled_pax != null ? String(result.entitled_pax) : "-"],
-    ["Actual Pax", result?.actual_pax != null ? String(result.actual_pax) : "-"],
-    ["Package", result?.package || "-"],
-    ["Breakfast Eligible", result == null ? "-" : result?.breakfast_eligible ? "YES" : "NO"],
-    ["Business Date", result?.business_date || "-"],
+    ["Room No.", result?.room_no || "-"],
+    ["Pax", formatDisplayPax(result)],
+    ["Breakfast Package", getBreakfastPackage(result)],
+    ["Special Package", getSpecialPackage(result)],
     ["Scan Time", formatScanResultTime(result)],
-    ["Scanned By", result?.scanned_by || "-"],
-    ["Device", result?.device_name || "-"],
-    ["Message", result?.message || "-"],
   ];
   els.scanResultPanel.innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><strong>${escapeHtml(String(v))}</strong></div>`).join("");
 
@@ -896,6 +896,22 @@ function renderScanResult(result) {
 function formatScanResultTime(result) {
   if (!result) return "-";
   return formatMaybeTimestamp(result.scan_time || result.client_scan_time);
+}
+
+function formatDisplayPax(result) {
+  if (!result) return "-";
+  const value = result.actual_pax ?? result.entitled_pax;
+  return value != null && value !== "" ? String(value) : "-";
+}
+
+function getBreakfastPackage(result) {
+  if (!result) return "-";
+  return result.breakfast_package || result.package || "-";
+}
+
+function getSpecialPackage(result) {
+  if (!result) return "-";
+  return result.special_package || result.specialPackage || result.special || result.notes || "-";
 }
 
 function scanTimeValue(row) {
@@ -1031,6 +1047,50 @@ async function refreshLogs() {
   } catch (error) {
     console.error(error);
     setMessage(els.settingsMessage, error.message || "Failed to load logs", true);
+  }
+}
+
+async function handleDeleteSelectedDateLogs() {
+  try {
+    if (!state.db) throw new Error("Firebase is not ready.");
+    const businessDate = els.logsDate.value || state.config.current_business_date || todayInBangkok();
+    const ok = window.confirm(`Delete all breakfast logs for ${businessDate}?
+This action cannot be undone.`);
+    if (!ok) return;
+
+    let deleted = 0;
+    while (true) {
+      const snap = await getDocs(query(
+        collection(state.db, "breakfast_logs"),
+        where("business_date", "==", businessDate),
+        limit(400)
+      ));
+      if (snap.empty) break;
+      const batch = writeBatch(state.db);
+      snap.docs.forEach((d) => {
+        batch.delete(d.ref);
+        deleted += 1;
+      });
+      await batch.commit();
+      if (snap.size < 400) break;
+    }
+
+    state.restaurantLiveRows = state.restaurantLiveRows.filter((row) => row.business_date !== businessDate);
+    state.logRows = state.logRows.filter((row) => row.business_date !== businessDate);
+    if (state.currentScanResult?.business_date === businessDate) {
+      state.currentScanResult = null;
+      state.selectedLiveLogId = "";
+      renderScanResult(null);
+    }
+    renderRestaurantLiveLogs();
+    await refreshLogs();
+    setMessage(els.scanMessage, `Deleted ${deleted} log(s) for ${businessDate}`);
+    setMessage(els.settingsMessage, `Deleted ${deleted} log(s) for ${businessDate}`);
+  } catch (error) {
+    console.error(error);
+    const msg = friendlyError(error);
+    setMessage(els.scanMessage, msg, true);
+    setMessage(els.settingsMessage, msg, true);
   }
 }
 
@@ -1182,6 +1242,8 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, allowAssignN
       guest_name: guest.guest_name || "",
       pax: Number(guest.pax || 0),
       package: guest.package || "",
+      breakfast_package: guest.breakfast_package || guest.package || "",
+      special_package: guest.special_package || "",
       breakfast_eligible: !!guest.breakfast_eligible,
       assigned_at: cardSnap.exists() ? cardSnap.data().assigned_at || serverTimestamp() : serverTimestamp(),
       assigned_by: cardSnap.exists() ? cardSnap.data().assigned_by || userId : userId,
@@ -1276,6 +1338,8 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, allowAssig
       guest_name: guest.guest_name || "",
       pax: Number(guest.pax || 0),
       package: guest.package || "",
+      breakfast_package: guest.breakfast_package || guest.package || "",
+      special_package: guest.special_package || "",
       breakfast_eligible: !!guest.breakfast_eligible,
       assigned_at: originalAssignedAt,
       assigned_by: originalAssignedBy,
@@ -1333,6 +1397,8 @@ async function clearCardTx({ db, userId, cardCodeInput }) {
       guest_name: "",
       pax: 0,
       package: "",
+      breakfast_package: "",
+      special_package: "",
       breakfast_eligible: false,
       assigned_at: null,
       assigned_by: "",
@@ -1410,6 +1476,8 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
       entitled_pax: Number(binding.pax || 0),
       actual_pax: 0,
       package: binding.package || "",
+      breakfast_package: binding.breakfast_package || binding.package || "",
+      special_package: binding.special_package || "",
       breakfast_eligible: !!binding.breakfast_eligible,
       message: "Assigned room not found in today's guest list",
       scanned_by: userId,
@@ -1430,6 +1498,8 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
       entitled_pax: Number(guest.pax || 0),
       actual_pax: 0,
       package: guest.package || "",
+      breakfast_package: guest.breakfast_package || guest.package || "",
+      special_package: guest.special_package || "",
       breakfast_eligible: false,
       message: "Room is not eligible for breakfast",
       scanned_by: userId,
@@ -1451,6 +1521,8 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
       entitled_pax: Number(guest.pax || 0),
       actual_pax: Number(guest.pax || 0),
       package: guest.package || "",
+      breakfast_package: guest.breakfast_package || guest.package || "",
+      special_package: guest.special_package || "",
       breakfast_eligible: true,
       message: "Room already checked in today",
       scanned_by: userId,
@@ -1472,6 +1544,8 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
     entitled_pax: entitledPax,
     actual_pax: actualPax,
     package: guest.package || "",
+    breakfast_package: guest.breakfast_package || guest.package || "",
+    special_package: guest.special_package || "",
     breakfast_eligible: true,
     message: "Ready for breakfast check-in",
     scanned_by: userId,
@@ -1491,6 +1565,8 @@ function invalidResult({ result, businessDate, cardCode, message, userId, device
     entitled_pax: 0,
     actual_pax: 0,
     package: "",
+    breakfast_package: "",
+    special_package: "",
     breakfast_eligible: false,
     message,
     scanned_by: userId,
@@ -1510,6 +1586,8 @@ async function writeScanLog(db, payload) {
     entitled_pax: payload.entitled_pax || 0,
     actual_pax: payload.actual_pax || 0,
     package: payload.package || "",
+    breakfast_package: payload.breakfast_package || payload.package || "",
+    special_package: payload.special_package || "",
     breakfast_eligible: !!payload.breakfast_eligible,
     result: payload.result || "",
     message: payload.message || "",
@@ -1574,6 +1652,8 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
       entitled_pax: entitledPax,
       actual_pax: actualPax,
       package: guest.package || "",
+      breakfast_package: guest.breakfast_package || guest.package || "",
+      special_package: guest.special_package || "",
       confirmed_by: userId,
       device_name: deviceName,
       log_ref_id: logRef.id,
@@ -1589,6 +1669,8 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
       entitled_pax: entitledPax,
       actual_pax: actualPax,
       package: guest.package || "",
+      breakfast_package: guest.breakfast_package || guest.package || "",
+      special_package: guest.special_package || "",
       breakfast_eligible: true,
       result: "checked_in",
       message: "valid check-in",
@@ -1606,6 +1688,8 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
       entitled_pax: entitledPax,
       actual_pax: actualPax,
       package: guest.package || "",
+      breakfast_package: guest.breakfast_package || guest.package || "",
+      special_package: guest.special_package || "",
       breakfast_eligible: true,
       scanned_by: userId,
       device_name: deviceName,
@@ -1683,6 +1767,8 @@ function normalizeUploadRows(rows) {
     existing.guest_name = mergedGuestNames.join(" / ");
     existing.pax = Math.max(existing.pax, mapped.pax, mergedGuestNames.length || 0);
     existing.package = pickBetterPackage(existing.package, mapped.package);
+    existing.breakfast_package = existing.breakfast_package || mapped.breakfast_package || mapped.package;
+    existing.special_package = existing.special_package || mapped.special_package || "";
     existing.breakfast_eligible = existing.breakfast_eligible || mapped.breakfast_eligible;
     existing.notes = [existing.notes, mapped.notes].filter(Boolean).join(" | ");
   }
@@ -1769,13 +1855,22 @@ function mapUploadRow(raw) {
     breakfastEligible = deriveBreakfastEligible(pkg);
   }
 
+  const specialPackageRaw = String(firstDefined(source, [
+    "specialpackage", "special_package", "special", "package2", "packageextra", "addonpackage",
+    "executivepackage", "executive", "privilegepackage", "benefitpackage", "specialbenefit"
+  ]) || "").trim();
+  const notes = String(firstDefined(source, ["notes", "remark", "remarks"]) || "").trim();
+  const specialPackage = normalizeSpecialPackage(specialPackageRaw || (pkg === "EXECUTIVE" ? "EXECUTIVE" : ""));
+
   return {
     room_no: roomNo,
     guest_name: guestName,
     pax,
     package: pkg,
+    breakfast_package: pkg,
+    special_package: specialPackage,
     breakfast_eligible: breakfastEligible,
-    notes: String(firstDefined(source, ["notes", "remark", "remarks"]) || "").trim(),
+    notes,
   };
 }
 
@@ -1799,6 +1894,13 @@ function normalizePackage(raw) {
   if (["HB", "HALF BOARD"].includes(value)) return "HB";
   if (["FB", "FULL BOARD"].includes(value)) return "FB";
   if (["AI", "AIP", "ALL INCLUSIVE"].includes(value)) return "AI";
+  if (["EXEC", "EXECUTIVE", "EXBF", "EXECUTIVE BREAKFAST", "EXECUTIVE BF"].includes(value)) return "EXECUTIVE";
+  return value;
+}
+
+function normalizeSpecialPackage(raw) {
+  const value = String(raw || "").trim().toUpperCase();
+  if (!value) return "";
   if (["EXEC", "EXECUTIVE", "EXBF", "EXECUTIVE BREAKFAST", "EXECUTIVE BF"].includes(value)) return "EXECUTIVE";
   return value;
 }
