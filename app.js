@@ -216,8 +216,7 @@ function bindTabs() {
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
       btn.classList.add("active");
       $(btn.dataset.tab).classList.add("active");
-      const isConvertTab = btn.dataset.tab === "convertTab";
-      document.body.classList.toggle("admin-convert-active", isConvertTab);
+      document.body.classList.remove("admin-convert-active");
       if (btn.dataset.tab === "restaurantTab") {
         focusScanInput();
       }
@@ -289,6 +288,18 @@ function bindEvents() {
 
   els.restaurantLiveLogsBody.addEventListener("click", handleRestaurantLiveLogsClick);
   els.logsBody.addEventListener("click", handleLogsTableClick);
+
+  const convertReloadBtn = $("convertReloadBtn");
+  const convertFrame = $("convertFrame");
+  if (convertReloadBtn && convertFrame) {
+    convertReloadBtn.addEventListener("click", () => {
+      try {
+        convertFrame.src = convertFrame.src;
+      } catch (error) {
+        console.error(error);
+      }
+    });
+  }
 }
 
 async function initAuth() {

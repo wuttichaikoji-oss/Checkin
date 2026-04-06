@@ -412,21 +412,45 @@
       </section>
 
       <section class="tab-panel" id="convertTab">
-        <div class="card convert-card">
-          <div class="card-title-row">
-            <h2>IHN Converter</h2>
-            <a class="button-link" href="https://gamepoola.github.io/Laya-IHN-Converter/" target="_blank" rel="noopener noreferrer">Open in new tab</a>
+        <div class="convert-shell">
+          <div class="card convert-hero">
+            <div class="convert-hero-grid">
+              <div class="convert-hero-copy">
+                <div class="convert-kicker">Integrated tool</div>
+                <h2>IHN Converter</h2>
+                <p class="helper">แปลงไฟล์ IHN ได้ในหน้าเดียวโดยไม่ต้องสลับแท็บไปมา ใช้สำหรับเตรียมไฟล์ก่อนนำกลับมา import ที่หน้า Daily Upload</p>
+                <ul class="convert-bullets">
+                  <li>เปิดตัวแปลงด้านล่างแล้วทำงานต่อได้ทันที</li>
+                  <li>ถ้าเว็บปลายทางโหลดช้า สามารถกดเปิดแท็บใหม่ได้</li>
+                  <li>หลังแปลงเสร็จ กลับไปหน้า Daily Upload เพื่อ import ได้เลย</li>
+                </ul>
+              </div>
+              <div class="convert-action-panel">
+                <a class="button-link primary-link" href="https://gamepoola.github.io/Laya-IHN-Converter/" target="_blank" rel="noopener noreferrer">Open in new tab</a>
+                <button type="button" class="ghost" id="convertReloadBtn">Reload Converter</button>
+                <div class="convert-mini-note">หน้า Convert นี้ออกแบบใหม่ให้สะอาดขึ้นและใช้งานง่ายขึ้น โดยคงตัวแปลงไว้ในพื้นที่เดียวแบบชัดเจน</div>
+              </div>
+            </div>
           </div>
-          <p class="helper">หน้า Convert นี้จะแสดงเว็บ Laya IHN Converter ภายในระบบโดยตรง เพื่อให้สลับงานได้ง่ายขึ้น</p>
-          <div class="convert-embed-wrap">
-            <iframe
-              id="convertFrame"
-              class="convert-embed"
-              src="https://gamepoola.github.io/Laya-IHN-Converter/"
-              title="Laya IHN Converter"
-              loading="lazy"
-              referrerpolicy="strict-origin-when-cross-origin"
-            ></iframe>
+
+          <div class="card convert-workspace">
+            <div class="convert-toolbar">
+              <div>
+                <div class="convert-toolbar-title">Converter Workspace</div>
+                <div class="convert-toolbar-subtitle">ตัวแปลงไฟล์จะแสดงด้านล่างในกรอบเดียวขนาดใหญ่</div>
+              </div>
+              <div class="inline-chip">Embedded view</div>
+            </div>
+            <div class="convert-stage">
+              <iframe
+                id="convertFrame"
+                class="convert-embed"
+                src="https://gamepoola.github.io/Laya-IHN-Converter/"
+                title="Laya IHN Converter"
+                loading="lazy"
+                referrerpolicy="strict-origin-when-cross-origin"
+              ></iframe>
+            </div>
           </div>
         </div>
       </section>
