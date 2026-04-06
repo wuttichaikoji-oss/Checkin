@@ -575,3 +575,54 @@ code{
   background:rgba(79,163,194,.16);
   border-color:rgba(79,163,194,.38);
 }
+
+
+.convert-card {
+  min-height: calc(100vh - 250px);
+}
+
+.convert-embed-wrap {
+  margin-top: 14px;
+  border: 1px solid rgba(109, 241, 180, 0.22);
+  border-radius: 24px;
+  overflow: hidden;
+  background: rgba(2, 12, 10, 0.8);
+  min-height: calc(100vh - 360px);
+}
+
+.convert-embed {
+  width: 100%;
+  min-height: calc(100vh - 360px);
+  border: 0;
+  display: block;
+  background: #03110d;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 10px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(109, 241, 180, 0.28);
+  color: #d7fff0;
+  text-decoration: none;
+  font-weight: 700;
+  background: rgba(9, 43, 31, 0.7);
+}
+
+.button-link:hover {
+  background: rgba(20, 88, 64, 0.88);
+}
+
+@media (max-width: 900px) {
+  .convert-card {
+    min-height: auto;
+  }
+
+  .convert-embed-wrap,
+  .convert-embed {
+    min-height: 70vh;
+  }
+}
