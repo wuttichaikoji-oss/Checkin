@@ -2415,7 +2415,8 @@ function mapUploadRow(raw) {
   const pax = Math.max(0, Number(paxRaw || 0)) || 1;
 
   const packageRaw = String(firstDefined(source, [
-    "package", "mealplan", "meal_plan", "ratecode", "plan", "boardtype"
+    "package", "mealplan", "meal_plan", "ratecode", "plan", "boardtype",
+    "rorb", "ro_rb", "roompackage", "breakfastpackage", "board", "boardbasis"
   ]) || "").trim();
   const pkg = normalizePackage(packageRaw);
 
@@ -2459,9 +2460,9 @@ function firstDefined(obj, keys) {
 
 function normalizePackage(raw) {
   const value = String(raw || "").trim().toUpperCase();
-  if (!value) return "RO";
-  if (["RO", "ROOM ONLY", "OTARO"].includes(value)) return "RO";
-  if (["RB", "ROOM BREAKFAST"].includes(value)) return "RB";
+  if (!value) return "";
+  if (["RO", "ROOM ONLY", "OTARO"].includes(value) || /^OTARO/.test(value)) return "RO";
+  if (["RB", "ROOM BREAKFAST", "ROOM WITH BREAKFAST"].includes(value)) return "RB";
   if (["BB", "BED BREAKFAST", "BED & BREAKFAST", "B&B"].includes(value)) return "BB";
   if (["HB", "HALF BOARD"].includes(value)) return "HB";
   if (["FB", "FULL BOARD"].includes(value)) return "FB";
