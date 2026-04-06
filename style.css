@@ -44,6 +44,8 @@ h2{ margin:0 0 16px; font-size:1.1rem; }
   border-radius:16px; cursor:pointer; font-weight:600;
 }
 .tab.active{ background:var(--accent); border-color:var(--accent); }
+.tab-link{ display:inline-flex; align-items:center; justify-content:center; text-decoration:none; }
+.tab-link:hover{ border-color:var(--accent-2); color:var(--text); }
 .tab-panel{ display:none; }
 .tab-panel.active{ display:block; }
 .panel-grid{
