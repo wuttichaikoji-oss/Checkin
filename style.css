@@ -22,6 +22,20 @@ html,body{
 }
 body{ min-height:100vh; }
 .app-shell{ max-width:1400px; margin:0 auto; padding:24px; }
+body.admin-convert-active{
+  overflow:hidden;
+}
+body.admin-convert-active .app-shell{
+  min-height:100dvh;
+  display:flex;
+  flex-direction:column;
+}
+body.admin-convert-active .content{
+  flex:1;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+}
 .topbar{
   display:flex; justify-content:space-between; gap:18px; align-items:flex-start;
   margin-bottom:18px;
@@ -598,6 +612,47 @@ code{
   background: #03110d;
 }
 
+body.admin-convert-active .topbar,
+body.admin-convert-active .tabbar{
+  flex-shrink:0;
+}
+
+body.admin-convert-active #convertTab.tab-panel.active{
+  display:flex;
+  flex:1;
+  min-height:0;
+}
+
+body.admin-convert-active .convert-card{
+  flex:1;
+  min-height:0;
+  height:100%;
+  padding:14px;
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+}
+
+body.admin-convert-active .convert-card .helper{
+  display:none;
+}
+
+body.admin-convert-active .convert-card h2{
+  margin-bottom:0;
+}
+
+body.admin-convert-active .convert-embed-wrap{
+  margin-top:10px;
+  flex:1;
+  min-height:0;
+  height:auto;
+}
+
+body.admin-convert-active .convert-embed{
+  min-height:0;
+  height:100%;
+}
+
 .button-link {
   display: inline-flex;
   align-items: center;
@@ -624,5 +679,13 @@ code{
   .convert-embed-wrap,
   .convert-embed {
     min-height: 70vh;
+  }
+
+  body.admin-convert-active .app-shell{
+    padding:12px;
+  }
+
+  body.admin-convert-active .convert-card{
+    padding:10px;
   }
 }

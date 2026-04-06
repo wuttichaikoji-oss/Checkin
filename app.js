@@ -216,6 +216,8 @@ function bindTabs() {
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
       btn.classList.add("active");
       $(btn.dataset.tab).classList.add("active");
+      const isConvertTab = btn.dataset.tab === "convertTab";
+      document.body.classList.toggle("admin-convert-active", isConvertTab);
       if (btn.dataset.tab === "restaurantTab") {
         focusScanInput();
       }
