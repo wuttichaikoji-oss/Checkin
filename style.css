@@ -173,6 +173,16 @@ code{
 .compact-table table{ min-width:1100px; }
 .compact-table th, .compact-table td{ padding:10px 12px; }
 
+.live-scan-scroll{
+  max-height: 470px;
+  overflow: auto;
+}
+
+.live-scan-scroll table{
+  min-width: 1100px;
+}
+
+
 
 .live-log-row{ cursor:pointer; transition:background .15s ease, box-shadow .15s ease; }
 .live-log-row:hover td{ background:rgba(118,200,163,.08); }
