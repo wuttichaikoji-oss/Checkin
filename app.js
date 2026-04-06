@@ -1238,6 +1238,9 @@ async function handleScanValidate() {
 
     if (result.result === "checked_in") {
       setMessage(els.scanMessage, "Breakfast check-in confirmed.");
+    } else if (shouldShowRoPaymentPopup(result)) {
+      setMessage(els.scanMessage, "Room is RO. Payment required.", true);
+      showRoPaymentPopup(result);
     } else {
       setMessage(els.scanMessage, result.message || result.result, !result.ok);
     }
@@ -1353,6 +1356,20 @@ function renderScanResult(result) {
 function formatScanResultTime(result) {
   if (!result) return "-";
   return formatMaybeTimestamp(result.scan_time || result.client_scan_time);
+}
+
+function shouldShowRoPaymentPopup(result) {
+  if (!result || result.ok) return false;
+  if (result.result !== "not_eligible") return false;
+  return normalizePackage(result.breakfast_package || result.package || "") === "RO";
+}
+
+function showRoPaymentPopup(result) {
+  const roomNo = normalizeRoomNo(result?.room_no) || "-";
+  const guestName = String(result?.guest_name || "").trim();
+  const detail = guestName ? `
+Guest: ${guestName}` : "";
+  window.alert(`ห้อง ${roomNo} เป็น RO ต้องชำระเงิน${detail}`);
 }
 
 function formatDisplayPax(result) {
@@ -2040,6 +2057,8 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
 
   const guest = guestSnap.data();
   if (!guest.breakfast_eligible) {
+    const breakfastPackage = guest.breakfast_package || guest.package || "";
+    const isRoRoom = normalizePackage(breakfastPackage) === "RO";
     return {
       ok: false,
       result: "not_eligible",
@@ -2050,10 +2069,10 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
       entitled_pax: Number(guest.pax || 0),
       actual_pax: 0,
       package: guest.package || "",
-      breakfast_package: guest.breakfast_package || guest.package || "",
+      breakfast_package: breakfastPackage,
       special_package: guest.special_package || "",
       breakfast_eligible: false,
-      message: "Room is not eligible for breakfast",
+      message: isRoRoom ? "Room is RO. Payment required" : "Room is not eligible for breakfast",
       scanned_by: userId,
       device_name: deviceName,
       client_scan_time: new Date().toISOString(),
