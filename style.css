@@ -614,23 +614,43 @@ code{
 
 body.admin-convert-active .topbar,
 body.admin-convert-active .tabbar{
-  flex-shrink:0;
+  display:none;
+}
+
+body.admin-convert-active .app-shell{
+  max-width:none;
+  width:100%;
+  padding:0;
+}
+
+body.admin-convert-active .content{
+  height:100dvh;
+  min-height:100dvh;
+  overflow:hidden;
 }
 
 body.admin-convert-active #convertTab.tab-panel.active{
   display:flex;
   flex:1;
   min-height:0;
+  height:100dvh;
+  padding:0;
+  overflow:hidden;
 }
 
 body.admin-convert-active .convert-card{
   flex:1;
   min-height:0;
   height:100%;
-  padding:14px;
+  padding:10px 12px 12px;
   display:flex;
   flex-direction:column;
   overflow:hidden;
+  border-radius:0;
+  border-left:0;
+  border-right:0;
+  border-top:0;
+  box-shadow:none;
 }
 
 body.admin-convert-active .convert-card .helper{
@@ -642,10 +662,12 @@ body.admin-convert-active .convert-card h2{
 }
 
 body.admin-convert-active .convert-embed-wrap{
-  margin-top:10px;
+  margin-top:8px;
   flex:1;
   min-height:0;
   height:auto;
+  overflow:hidden;
+  border-radius:16px;
 }
 
 body.admin-convert-active .convert-embed{
@@ -682,10 +704,10 @@ body.admin-convert-active .convert-embed{
   }
 
   body.admin-convert-active .app-shell{
-    padding:12px;
+    padding:0;
   }
 
   body.admin-convert-active .convert-card{
-    padding:10px;
+    padding:8px;
   }
 }
