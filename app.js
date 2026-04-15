@@ -1534,7 +1534,7 @@ Guest: ${guestName}` : "";
   els.roPaymentRoom.textContent = normalizeRoomNo(result?.room_no) || "-";
   els.roPaymentGuest.textContent = String(result?.guest_name || "-").trim() || "-";
   els.roPaymentPackage.textContent = getBreakfastPackage(result);
-  els.roPaymentPax.textContent = formatDisplayPax(result);
+  els.roPaymentPax.textContent = formatDisplayPax(result, { preferEntitled: true });
   els.roPaymentText.textContent = `ห้อง ${normalizeRoomNo(result?.room_no) || "-"} เป็นห้อง RO ต้องชำระเงิน หากแขกต้องการทาน กรุณารับชำระเงินก่อน`;
   els.roPaymentAmount.value = "";
   setMessage(els.roPaymentMessage, "");
@@ -1604,9 +1604,13 @@ async function handleRoPaymentDecision(decision) {
   }
 }
 
-function formatDisplayPax(result) {
+function formatDisplayPax(result, options = {}) {
   if (!result) return "-";
-  const value = result.actual_pax ?? result.entitled_pax;
+  const preferEntitled = !!options.preferEntitled;
+  const candidates = preferEntitled
+    ? [result.entitled_pax, result.actual_pax]
+    : [result.actual_pax, result.entitled_pax];
+  const value = candidates.find((v) => v != null && v !== "");
   return value != null && value !== "" ? String(value) : "-";
 }
 
