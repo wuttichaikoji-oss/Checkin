@@ -298,6 +298,41 @@ function bindEvents() {
     state.restaurantInputMode = "room";
   });
 
+  els.roPaymentPaidBtn?.addEventListener("click", () => {
+    handleRoPaymentDecision("paid");
+  });
+
+  els.roPaymentDeclineBtn?.addEventListener("click", () => {
+    handleRoPaymentDecision("declined");
+  });
+
+  els.roPaymentCloseBtn?.addEventListener("click", () => {
+    hideRoPaymentPopup();
+    state.pendingRoPaymentResult = null;
+    focusScanInput();
+  });
+
+  els.roPaymentAmount?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleRoPaymentDecision("paid");
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      hideRoPaymentPopup();
+      state.pendingRoPaymentResult = null;
+      focusScanInput();
+    }
+  });
+
+  els.roPaymentModal?.addEventListener("click", (e) => {
+    if (e.target === els.roPaymentModal) {
+      hideRoPaymentPopup();
+      state.pendingRoPaymentResult = null;
+      focusScanInput();
+    }
+  });
+
   els.refreshLogsBtn.addEventListener("click", refreshLogs);
   els.exportLogsBtn.addEventListener("click", exportLogsCsv);
   els.deleteSelectedDateLogsBtn.addEventListener("click", handleDeleteSelectedDateLogs);
