@@ -755,3 +755,144 @@ code{
     height:72vh;
   }
 }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 11, 10, 0.72);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 1200;
+}
+
+.modal-backdrop[hidden] {
+  display: none !important;
+}
+
+.modal-card {
+  width: min(680px, calc(100vw - 32px));
+  border-radius: 24px;
+  border: 1px solid rgba(69, 225, 170, 0.24);
+  background: linear-gradient(180deg, rgba(12, 27, 24, 0.98), rgba(10, 20, 18, 0.98));
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+}
+
+.modal-head,
+.modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 24px;
+}
+
+.modal-body {
+  padding: 0 24px 20px;
+}
+
+.modal-kicker {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  opacity: 0.88;
+  margin-bottom: 6px;
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.1;
+}
+
+.modal-close {
+  min-width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  font-size: 28px;
+  line-height: 1;
+  padding: 0;
+}
+
+.modal-lead {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 18px;
+}
+
+.ro-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.ro-summary-grid > div {
+  border: 1px solid rgba(69, 225, 170, 0.18);
+  background: rgba(8, 22, 19, 0.72);
+  border-radius: 16px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ro-summary-grid span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.ro-summary-grid strong {
+  font-size: 19px;
+}
+
+.ro-amount-field {
+  display: grid;
+  gap: 8px;
+}
+
+.ro-amount-field input {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.ro-payment-actions {
+  justify-content: flex-end;
+}
+
+button.success {
+  background: linear-gradient(180deg, rgba(46, 176, 120, 0.95), rgba(28, 138, 88, 0.95));
+  border-color: rgba(87, 220, 158, 0.4);
+  color: #f7fffb;
+}
+
+button.success:hover {
+  filter: brightness(1.06);
+}
+
+@media (max-width: 720px) {
+  .modal-head h2 {
+    font-size: 24px;
+  }
+
+  .ro-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .modal-actions button {
+    width: 100%;
+  }
+}
+
+body.modal-open { overflow: hidden; }
+
+
+.ro-payment-modal .modal-close { display: none; }

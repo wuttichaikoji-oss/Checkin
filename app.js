@@ -81,6 +81,18 @@ const els = {
   restaurantLiveStatus: $("restaurantLiveStatus"),
   restaurantLiveLogsBody: $("restaurantLiveLogsBody"),
 
+  roPaymentModal: $("roPaymentModal"),
+  roPaymentCloseBtn: $("roPaymentCloseBtn"),
+  roPaymentDeclineBtn: $("roPaymentDeclineBtn"),
+  roPaymentPaidBtn: $("roPaymentPaidBtn"),
+  roPaymentText: $("roPaymentText"),
+  roPaymentRoom: $("roPaymentRoom"),
+  roPaymentGuest: $("roPaymentGuest"),
+  roPaymentPackage: $("roPaymentPackage"),
+  roPaymentPax: $("roPaymentPax"),
+  roPaymentAmount: $("roPaymentAmount"),
+  roPaymentMessage: $("roPaymentMessage"),
+
   logsDate: $("logsDate"),
   logsResultFilter: $("logsResultFilter"),
   logsRoomFilter: $("logsRoomFilter"),
@@ -150,6 +162,7 @@ const state = {
   midnightCleanupInterval: null,
   scanBusy: false,
   scanAutoTimer: null,
+  pendingRoPaymentResult: null,
 };
 
 init();
@@ -1267,9 +1280,11 @@ async function handleScanValidate() {
 
     els.scanConfirmBtn.disabled = true;
 
+    const needsRoPaymentPopup = shouldShowRoPaymentPopup(result);
+
     if (result.result === "checked_in") {
       setMessage(els.scanMessage, "Breakfast check-in confirmed.");
-    } else if (shouldShowRoPaymentPopup(result)) {
+    } else if (needsRoPaymentPopup) {
       setMessage(els.scanMessage, "Room is RO. Payment required.", true);
       showRoPaymentPopup(result);
     } else {
@@ -1277,7 +1292,7 @@ async function handleScanValidate() {
     }
 
     await refreshLogs();
-    if ((state.config.checkin_mode || "auto") === "auto" || !result.ok) {
+    if (!needsRoPaymentPopup && ((state.config.checkin_mode || "auto") === "auto" || !result.ok)) {
       autoResetScanInput();
     }
   } catch (error) {
@@ -1324,9 +1339,11 @@ async function handleManualRoomValidate() {
 
     els.scanConfirmBtn.disabled = true;
 
+    const needsRoPaymentPopup = shouldShowRoPaymentPopup(result);
+
     if (result.result === "checked_in") {
       setMessage(els.scanMessage, "Breakfast check-in confirmed.");
-    } else if (shouldShowRoPaymentPopup(result)) {
+    } else if (needsRoPaymentPopup) {
       setMessage(els.scanMessage, "Room is RO. Payment required.", true);
       showRoPaymentPopup(result);
     } else {
@@ -1334,7 +1351,7 @@ async function handleManualRoomValidate() {
     }
 
     await refreshLogs();
-    if ((state.config.checkin_mode || "auto") === "auto" || !result.ok) {
+    if (!needsRoPaymentPopup && ((state.config.checkin_mode || "auto") === "auto" || !result.ok)) {
       autoResetScanInput();
     }
   } catch (error) {
@@ -1403,6 +1420,8 @@ async function handleManualConfirm() {
 
 function resetScanResult() {
   state.currentScanResult = null;
+  state.pendingRoPaymentResult = null;
+  hideRoPaymentPopup();
   els.scanCardCode.value = "";
   if (els.scanManualRoomNo) els.scanManualRoomNo.value = "";
   els.scanActualPax.value = "";
@@ -1443,6 +1462,18 @@ function renderScanResult(result) {
   }
 }
 
+function formatThb(value) {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount)) return "THB 0";
+  return `THB ${amount.toLocaleString(undefined, { minimumFractionDigits: amount % 1 ? 2 : 0, maximumFractionDigits: 2 })}`;
+}
+
+function formatAmountPlain(value) {
+  const amount = Number(value || 0);
+  if (!Number.isFinite(amount)) return "0";
+  return amount % 1 ? amount.toFixed(2) : String(Math.trunc(amount));
+}
+
 function formatScanResultTime(result) {
   if (!result) return "-";
   return formatMaybeTimestamp(result.scan_time || result.client_scan_time);
@@ -1455,11 +1486,87 @@ function shouldShowRoPaymentPopup(result) {
 }
 
 function showRoPaymentPopup(result) {
-  const roomNo = normalizeRoomNo(result?.room_no) || "-";
-  const guestName = String(result?.guest_name || "").trim();
-  const detail = guestName ? `
+  if (!els.roPaymentModal) {
+    const roomNo = normalizeRoomNo(result?.room_no) || "-";
+    const guestName = String(result?.guest_name || "").trim();
+    const detail = guestName ? `
 Guest: ${guestName}` : "";
-  window.alert(`ห้อง ${roomNo} เป็น RO ต้องชำระเงิน${detail}`);
+    window.alert(`ห้อง ${roomNo} เป็น RO ต้องชำระเงิน${detail}`);
+    return;
+  }
+
+  state.pendingRoPaymentResult = { ...result };
+  els.roPaymentRoom.textContent = normalizeRoomNo(result?.room_no) || "-";
+  els.roPaymentGuest.textContent = String(result?.guest_name || "-").trim() || "-";
+  els.roPaymentPackage.textContent = getBreakfastPackage(result);
+  els.roPaymentPax.textContent = formatDisplayPax(result);
+  els.roPaymentText.textContent = `ห้อง ${normalizeRoomNo(result?.room_no) || "-"} เป็นห้อง RO ต้องชำระเงิน หากแขกต้องการทาน กรุณารับชำระเงินก่อน`;
+  els.roPaymentAmount.value = "";
+  setMessage(els.roPaymentMessage, "");
+  els.roPaymentModal.hidden = false;
+  document.body.classList.add("modal-open");
+  window.setTimeout(() => els.roPaymentAmount?.focus(), 30);
+}
+
+function hideRoPaymentPopup() {
+  if (!els.roPaymentModal) return;
+  els.roPaymentModal.hidden = true;
+  document.body.classList.remove("modal-open");
+  setMessage(els.roPaymentMessage, "");
+}
+
+async function handleRoPaymentDecision(decision) {
+  const pending = state.pendingRoPaymentResult;
+  if (!pending?.log_id) {
+    hideRoPaymentPopup();
+    return;
+  }
+
+  try {
+    if (!state.db) throw new Error("Firebase is not ready.");
+
+    if (decision === "paid") {
+      const amount = Number(els.roPaymentAmount?.value || 0);
+      if (!(amount > 0)) {
+        setMessage(els.roPaymentMessage, "กรุณาใส่จำนวนเงินที่ชำระ", true);
+        els.roPaymentAmount?.focus();
+        return;
+      }
+
+      const result = await confirmRoPaidCheckinTx({
+        db: state.db,
+        logId: pending.log_id,
+        userId: state.operator.userId,
+        deviceName: state.operator.deviceName,
+        sourceResult: pending,
+        amount,
+        actualPaxInput: els.scanActualPax.value || pending.actual_pax || null,
+      });
+
+      state.currentScanResult = result;
+      state.selectedLiveLogId = result.log_id || pending.log_id;
+      renderScanResult(result);
+      setMessage(els.scanMessage, `รับชำระแล้ว ${formatThb(amount)} · Breakfast check-in confirmed.`);
+    } else {
+      const result = await markRoDeclined({
+        db: state.db,
+        logId: pending.log_id,
+        sourceResult: pending,
+      });
+      state.currentScanResult = result;
+      state.selectedLiveLogId = result.log_id || pending.log_id;
+      renderScanResult(result);
+      setMessage(els.scanMessage, "แขกปฏิเสธไม่ทาน · ไม่ได้รับชำระเงิน", true);
+    }
+
+    await refreshLogs();
+    hideRoPaymentPopup();
+    state.pendingRoPaymentResult = null;
+    autoResetScanInput();
+  } catch (error) {
+    console.error(error);
+    setMessage(els.roPaymentMessage, friendlyError(error), true);
+  }
 }
 
 function formatDisplayPax(result) {
@@ -1476,6 +1583,18 @@ function getBreakfastPackage(result) {
 function getSpecialPackage(result) {
   if (!result) return "-";
   return result.special_package || result.specialPackage || result.special || result.notes || "-";
+}
+
+function getLogMessage(row) {
+  const paymentStatus = String(row?.payment_status || "").trim();
+  const amount = Number(row?.payment_amount || 0);
+  if (paymentStatus === "paid") {
+    return `${row?.message || "RO payment received"} · ${formatThb(amount)}`;
+  }
+  if (paymentStatus === "declined") {
+    return row?.message || "RO room declined breakfast / no payment";
+  }
+  return row?.message || "";
 }
 
 function scanTimeValue(row) {
@@ -1666,7 +1785,7 @@ function renderRestaurantLiveLogs() {
         <td>${row.actual_pax ?? ""}</td>
         <td>${escapeHtml(row.package || "")}</td>
         <td>${escapeHtml(row.scanned_by || "")}</td>
-        <td>${escapeHtml(row.message || "")}</td>
+        <td>${escapeHtml(getLogMessage(row))}</td>
         <td><button class="table-action danger ghost" type="button" data-delete-log-id="${escapeHtml(row.id || "")}" title="Delete log">Delete</button></td>
       </tr>
     `;
@@ -1766,7 +1885,7 @@ function renderLogsTable() {
       <td>${row.actual_pax ?? ""}</td>
       <td>${escapeHtml(row.package || "")}</td>
       <td>${escapeHtml(row.scanned_by || "")}</td>
-      <td>${escapeHtml(row.message || "")}</td>
+      <td>${escapeHtml(getLogMessage(row))}</td>
       <td><button class="table-action danger ghost" type="button" data-delete-log-id="${escapeHtml(row.id || "")}" title="Delete log">Delete</button></td>
     </tr>
   `).join("");
@@ -1817,7 +1936,7 @@ function exportLogsCsv() {
   }
   const headers = [
     "business_date","scan_time","result","card_code","room_no","guest_name",
-    "entitled_pax","actual_pax","package","breakfast_eligible","device_name","scanned_by","message"
+    "entitled_pax","actual_pax","package","breakfast_eligible","device_name","scanned_by","payment_status","payment_amount","message"
   ];
   const lines = [
     headers.join(","),
@@ -2220,6 +2339,125 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput
     scanned_by: userId,
     device_name: deviceName,
     client_scan_time: new Date().toISOString(),
+  };
+}
+
+async function confirmRoPaidCheckinTx({ db, logId, userId, deviceName, sourceResult, amount, actualPaxInput = null }) {
+  return runTransaction(db, async (tx) => {
+    const configRef = doc(db, "settings", "app_config");
+    const configSnap = await tx.get(configRef);
+    if (!configSnap.exists()) throw makeAppError("CONFIG_NOT_FOUND");
+
+    const config = { ...DEFAULT_CONFIG, ...configSnap.data() };
+    const businessDate = sourceResult?.business_date || config.current_business_date;
+    const roomNo = normalizeRoomNo(sourceResult?.room_no);
+    if (!roomNo) throw makeAppError("ROOM_REQUIRED", "Room number is required");
+
+    const guestRef = doc(db, "guest_daily", buildDateRoomId(businessDate, roomNo));
+    const guestSnap = await tx.get(guestRef);
+    if (!guestSnap.exists()) throw makeAppError("ROOM_NOT_FOUND", "Room not found in today's guest list");
+    const guest = guestSnap.data();
+
+    const roomCheckinRef = doc(db, "room_checkin_daily", buildDateRoomId(businessDate, roomNo));
+    const roomCheckinSnap = await tx.get(roomCheckinRef);
+    if (roomCheckinSnap.exists()) throw makeAppError("ALREADY_CHECKED_IN", "Room already checked in today");
+
+    const entitledPax = Number(guest.pax || sourceResult?.entitled_pax || 0);
+    const actualPax = parseActualPax(actualPaxInput, entitledPax);
+    const logRef = doc(db, "breakfast_logs", logId);
+    const logSnap = await tx.get(logRef);
+    if (!logSnap.exists()) throw makeAppError("LOG_NOT_FOUND", "RO payment log not found");
+
+    tx.set(roomCheckinRef, {
+      doc_id: buildDateRoomId(businessDate, roomNo),
+      business_date: businessDate,
+      room_no: roomNo,
+      checked_in: true,
+      first_checkin_at: serverTimestamp(),
+      first_card_code: sourceResult?.card_code || "",
+      guest_name: guest.guest_name || sourceResult?.guest_name || "",
+      entitled_pax: entitledPax,
+      actual_pax: actualPax,
+      package: guest.package || sourceResult?.package || "",
+      breakfast_package: guest.breakfast_package || guest.package || sourceResult?.breakfast_package || sourceResult?.package || "",
+      special_package: guest.special_package || sourceResult?.special_package || "",
+      confirmed_by: userId,
+      device_name: deviceName,
+      manual_room_entry: !sourceResult?.card_code,
+      log_ref_id: logId,
+      payment_required: true,
+      payment_status: "paid",
+      payment_amount: Number(amount),
+      payment_currency: "THB",
+      ro_paid: true,
+    });
+
+    tx.update(logRef, {
+      actual_pax: actualPax,
+      result: "ro_paid_checked_in",
+      message: `RO room paid ${formatAmountPlain(amount)} THB and checked in`,
+      payment_required: true,
+      payment_status: "paid",
+      payment_amount: Number(amount),
+      payment_currency: "THB",
+      breakfast_eligible: false,
+      ro_paid: true,
+      resolved_at: serverTimestamp(),
+      resolved_by: userId,
+      device_name: deviceName,
+    });
+
+    return {
+      ok: true,
+      result: "ro_paid_checked_in",
+      business_date: businessDate,
+      card_code: sourceResult?.card_code || "",
+      room_no: roomNo,
+      guest_name: guest.guest_name || sourceResult?.guest_name || "",
+      entitled_pax: entitledPax,
+      actual_pax: actualPax,
+      package: guest.package || sourceResult?.package || "",
+      breakfast_package: guest.breakfast_package || guest.package || sourceResult?.breakfast_package || sourceResult?.package || "",
+      special_package: guest.special_package || sourceResult?.special_package || "",
+      breakfast_eligible: false,
+      scanned_by: userId,
+      device_name: deviceName,
+      client_scan_time: new Date().toISOString(),
+      payment_required: true,
+      payment_status: "paid",
+      payment_amount: Number(amount),
+      payment_currency: "THB",
+      message: `RO room paid ${formatAmountPlain(amount)} THB and checked in`,
+      log_id: logId,
+    };
+  });
+}
+
+async function markRoDeclined({ db, logId, sourceResult }) {
+  const ref = doc(db, "breakfast_logs", logId);
+  await updateDoc(ref, {
+    result: "ro_declined",
+    message: "RO room declined breakfast / no payment",
+    payment_required: true,
+    payment_status: "declined",
+    payment_amount: 0,
+    payment_currency: "THB",
+    ro_paid: false,
+    resolved_at: serverTimestamp(),
+    resolved_by: state.operator.userId,
+    device_name: state.operator.deviceName,
+  });
+
+  return {
+    ...sourceResult,
+    ok: false,
+    result: "ro_declined",
+    payment_required: true,
+    payment_status: "declined",
+    payment_amount: 0,
+    payment_currency: "THB",
+    message: "RO room declined breakfast / no payment",
+    log_id: logId,
   };
 }
 

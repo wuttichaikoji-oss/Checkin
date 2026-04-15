@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Laya Breakfast Card Check-in v2.4</title>
+  <title>Laya Breakfast Card Check-in v2.5</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
   <script src="firebase-config.js"></script>
@@ -12,7 +12,7 @@
   <div class="app-shell">
     <header class="topbar">
       <div>
-        <h1>Laya Breakfast Card Check-in v2.4</h1>
+        <h1>Laya Breakfast Card Check-in v2.5</h1>
         <p class="subtitle">Reusable card + daily guest upload + breakfast scan</p>
         <p class="helper" style="margin-top:8px">Admin page: full system. FO-only page is now the default root <strong>index.html</strong>.</p>
       </div>
@@ -296,6 +296,8 @@
                 <option value="unassigned_card">unassigned_card</option>
                 <option value="room_not_found">room_not_found</option>
                 <option value="not_eligible">not_eligible</option>
+                <option value="ro_paid_checked_in">ro_paid_checked_in</option>
+                <option value="ro_declined">ro_declined</option>
                 <option value="manual_override">manual_override</option>
               </select>
             </label>
@@ -464,5 +466,37 @@
   </div>
 
   <script type="module" src="app.js"></script>
+
+
+  <div class="modal-backdrop" id="roPaymentModal" hidden>
+    <div class="modal-card ro-payment-modal" role="dialog" aria-modal="true" aria-labelledby="roPaymentTitle">
+      <div class="modal-head">
+        <div>
+          <div class="modal-kicker">RO PAYMENT REQUIRED</div>
+          <h2 id="roPaymentTitle">ห้องนี้เป็น RO ต้องชำระเงิน</h2>
+        </div>
+        <button type="button" class="modal-close ghost" id="roPaymentCloseBtn" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-lead" id="roPaymentText">หากแขกต้องการรับประทานอาหารเช้า กรุณารับชำระเงินก่อน</p>
+        <div class="ro-summary-grid">
+          <div><span>Room</span><strong id="roPaymentRoom">-</strong></div>
+          <div><span>Guest</span><strong id="roPaymentGuest">-</strong></div>
+          <div><span>Package</span><strong id="roPaymentPackage">RO</strong></div>
+          <div><span>Pax</span><strong id="roPaymentPax">-</strong></div>
+        </div>
+        <label class="full ro-amount-field">
+          <span>จำนวนเงินที่ชำระ</span>
+          <input type="number" id="roPaymentAmount" min="0" step="0.01" placeholder="เช่น 350" />
+        </label>
+        <div class="message" id="roPaymentMessage"></div>
+      </div>
+      <div class="modal-actions ro-payment-actions">
+        <button type="button" class="danger" id="roPaymentDeclineBtn">แขกปฏิเสธไม่ทาน</button>
+        <button type="button" class="primary success" id="roPaymentPaidBtn">แขกชำระเงิน / ตกลง</button>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>
