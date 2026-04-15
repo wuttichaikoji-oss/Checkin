@@ -207,6 +207,10 @@
                 <span>Card Code</span>
                 <input type="text" id="scanCardCode" placeholder="Scan card here" />
               </label>
+              <label class="full">
+                <span>Manual Room No (if guest forgot card)</span>
+                <input type="text" id="scanManualRoomNo" placeholder="Type room number and press Enter" />
+              </label>
               <label>
                 <span>Actual Pax (auto from Daily Guest Upload)</span>
                 <input type="number" id="scanActualPax" min="0" step="1" placeholder="Auto-filled from Daily Guest Upload" />
@@ -218,6 +222,7 @@
             </div>
             <div class="button-row">
               <button id="scanValidateBtn" class="primary">Scan / Check-in</button>
+              <button id="scanManualRoomBtn">Manual Room</button>
               <button id="scanConfirmBtn" disabled>Confirm Check-in</button>
               <button id="scanClearBtn" class="ghost">Clear Result</button>
             </div>

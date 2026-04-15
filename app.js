@@ -66,9 +66,11 @@ const els = {
   foAssignLogBody: $("foAssignLogBody"),
 
   scanCardCode: $("scanCardCode"),
+  scanManualRoomNo: $("scanManualRoomNo"),
   scanActualPax: $("scanActualPax"),
   scanModeBadge: $("scanModeBadge"),
   scanValidateBtn: $("scanValidateBtn"),
+  scanManualRoomBtn: $("scanManualRoomBtn"),
   scanConfirmBtn: $("scanConfirmBtn"),
   scanClearBtn: $("scanClearBtn"),
   scanMessage: $("scanMessage"),
@@ -143,6 +145,7 @@ const state = {
   guestDailyUnsub: null,
   foAssignLogRows: [],
   foAssignLogUnsub: null,
+  restaurantInputMode: "card",
   midnightCleanupTimer: null,
   midnightCleanupInterval: null,
   scanBusy: false,
@@ -255,6 +258,7 @@ function bindEvents() {
   });
 
   els.scanValidateBtn.addEventListener("click", handleScanValidate);
+  els.scanManualRoomBtn?.addEventListener("click", handleManualRoomValidate);
   els.scanConfirmBtn.addEventListener("click", handleManualConfirm);
   els.scanClearBtn.addEventListener("click", resetScanResult);
   els.scanCardCode.addEventListener("keydown", (e) => {
@@ -265,8 +269,20 @@ function bindEvents() {
     }
   });
 
+  els.scanManualRoomNo?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleManualRoomValidate();
+    }
+  });
+
   els.scanCardCode.addEventListener("input", () => {
+    state.restaurantInputMode = "card";
     scheduleAutoScanSubmit();
+  });
+
+  els.scanManualRoomNo?.addEventListener("input", () => {
+    state.restaurantInputMode = "room";
   });
 
   els.refreshLogsBtn.addEventListener("click", refreshLogs);
@@ -1221,6 +1237,7 @@ async function handleScanValidate() {
 
   try {
     state.scanBusy = true;
+    state.restaurantInputMode = "card";
     clearTimeout(state.scanAutoTimer);
     if (!state.db) throw new Error("Firebase is not ready.");
     const result = await handleRestaurantScan({
@@ -1228,6 +1245,64 @@ async function handleScanValidate() {
       userId: state.operator.userId,
       deviceName: state.operator.deviceName,
       cardCodeInput: els.scanCardCode.value,
+      roomNoInput: null,
+      checkinMode: state.config.checkin_mode || "auto",
+      actualPaxInput: els.scanActualPax.value || null,
+    });
+
+    state.currentScanResult = result;
+    if (result?.log_id) state.selectedLiveLogId = result.log_id;
+    renderScanResult(result);
+
+    if (result.entitled_pax != null && !els.scanActualPax.value) {
+      const derivedPax = Number(result.actual_pax || result.entitled_pax || 0);
+      if (derivedPax > 0) els.scanActualPax.value = String(derivedPax);
+    }
+
+    if (result.ok && (state.config.checkin_mode || "auto") === "manual") {
+      setMessage(els.scanMessage, "Valid. Press Confirm Check-in.");
+      els.scanConfirmBtn.disabled = false;
+      return;
+    }
+
+    els.scanConfirmBtn.disabled = true;
+
+    if (result.result === "checked_in") {
+      setMessage(els.scanMessage, "Breakfast check-in confirmed.");
+    } else if (shouldShowRoPaymentPopup(result)) {
+      setMessage(els.scanMessage, "Room is RO. Payment required.", true);
+      showRoPaymentPopup(result);
+    } else {
+      setMessage(els.scanMessage, result.message || result.result, !result.ok);
+    }
+
+    await refreshLogs();
+    if ((state.config.checkin_mode || "auto") === "auto" || !result.ok) {
+      autoResetScanInput();
+    }
+  } catch (error) {
+    console.error(error);
+    setMessage(els.scanMessage, friendlyError(error), true);
+    autoResetScanInput();
+  } finally {
+    state.scanBusy = false;
+  }
+}
+
+async function handleManualRoomValidate() {
+  if (state.scanBusy) return;
+
+  try {
+    state.scanBusy = true;
+    state.restaurantInputMode = "room";
+    clearTimeout(state.scanAutoTimer);
+    if (!state.db) throw new Error("Firebase is not ready.");
+    const result = await handleRestaurantScan({
+      db: state.db,
+      userId: state.operator.userId,
+      deviceName: state.operator.deviceName,
+      cardCodeInput: null,
+      roomNoInput: els.scanManualRoomNo?.value || "",
       checkinMode: state.config.checkin_mode || "auto",
       actualPaxInput: els.scanActualPax.value || null,
     });
@@ -1278,7 +1353,8 @@ async function handleManualConfirm() {
       db: state.db,
       userId: state.operator.userId,
       deviceName: state.operator.deviceName,
-      cardCodeInput: els.scanCardCode.value,
+      cardCodeInput: state.restaurantInputMode === "card" ? els.scanCardCode.value : null,
+      roomNoInput: state.restaurantInputMode === "room" ? (els.scanManualRoomNo?.value || state.currentScanResult?.room_no || "") : null,
       actualPaxInput: els.scanActualPax.value || null,
     });
     state.currentScanResult = result;
@@ -1296,7 +1372,7 @@ async function handleManualConfirm() {
         ok: false,
         result: "already_checked_in",
         business_date: businessDate,
-        card_code: normalizeCardCode(els.scanCardCode.value),
+        card_code: state.restaurantInputMode === "card" ? normalizeCardCode(els.scanCardCode.value) : "",
         room_no: state.currentScanResult?.room_no || "",
         guest_name: state.currentScanResult?.guest_name || "",
         entitled_pax: state.currentScanResult?.entitled_pax || 0,
@@ -1328,6 +1404,7 @@ async function handleManualConfirm() {
 function resetScanResult() {
   state.currentScanResult = null;
   els.scanCardCode.value = "";
+  if (els.scanManualRoomNo) els.scanManualRoomNo.value = "";
   els.scanActualPax.value = "";
   els.scanConfirmBtn.disabled = true;
   renderScanResult(null);
@@ -2012,56 +2089,64 @@ async function clearCardTx({ db, userId, cardCodeInput }) {
   });
 }
 
-async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxInput = null }) {
+async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput = null, actualPaxInput = null }) {
   const cardCode = normalizeCardCode(cardCodeInput);
-  if (!cardCode) {
-    throw makeAppError("CARD_REQUIRED", "Please scan or enter card code");
+  const manualRoomNo = normalizeRoomNo(roomNoInput);
+  const isManualRoom = !!manualRoomNo;
+  if (!cardCode && !manualRoomNo) {
+    throw makeAppError("CARD_OR_ROOM_REQUIRED", "Please scan card or enter room number");
   }
 
   const config = await getAppConfig(db);
   const businessDate = config.current_business_date;
 
-  const cardSnap = await getDoc(doc(db, "card_bindings", cardCode));
-  if (!cardSnap.exists()) {
-    return invalidResult({
-      result: "invalid_card",
-      businessDate,
-      cardCode,
-      message: "Card not found in system",
-      userId,
-      deviceName,
-    });
+  let roomNo = manualRoomNo;
+  let binding = null;
+
+  if (!isManualRoom) {
+    const cardSnap = await getDoc(doc(db, "card_bindings", cardCode));
+    if (!cardSnap.exists()) {
+      return invalidResult({
+        result: "invalid_card",
+        businessDate,
+        cardCode,
+        message: "Card not found in system",
+        userId,
+        deviceName,
+      });
+    }
+
+    binding = cardSnap.data();
+    if (!binding.active || !binding.room_no) {
+      return invalidResult({
+        result: "unassigned_card",
+        businessDate,
+        cardCode,
+        message: "This card is not assigned to any room",
+        userId,
+        deviceName,
+      });
+    }
+
+    roomNo = binding.room_no;
   }
 
-  const binding = cardSnap.data();
-  if (!binding.active || !binding.room_no) {
-    return invalidResult({
-      result: "unassigned_card",
-      businessDate,
-      cardCode,
-      message: "This card is not assigned to any room",
-      userId,
-      deviceName,
-    });
-  }
-
-  const roomNo = binding.room_no;
   const guestSnap = await getDoc(doc(db, "guest_daily", buildDateRoomId(businessDate, roomNo)));
   if (!guestSnap.exists()) {
     return {
       ok: false,
       result: "room_not_found",
       business_date: businessDate,
-      card_code: cardCode,
+      card_code: isManualRoom ? "" : cardCode,
       room_no: roomNo,
-      guest_name: binding.guest_name || "",
-      entitled_pax: Number(binding.pax || 0),
+      guest_name: binding?.guest_name || "",
+      entitled_pax: Number(binding?.pax || 0),
       actual_pax: 0,
-      package: binding.package || "",
-      breakfast_package: binding.breakfast_package || binding.package || "",
-      special_package: binding.special_package || "",
-      breakfast_eligible: !!binding.breakfast_eligible,
-      message: "Assigned room not found in today's guest list",
+      package: binding?.package || "",
+      breakfast_package: binding?.breakfast_package || binding?.package || "",
+      special_package: binding?.special_package || "",
+      breakfast_eligible: !!binding?.breakfast_eligible,
+      message: "Room not found in today's guest list",
       scanned_by: userId,
       device_name: deviceName,
       client_scan_time: new Date().toISOString(),
@@ -2076,7 +2161,7 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
       ok: false,
       result: "not_eligible",
       business_date: businessDate,
-      card_code: cardCode,
+      card_code: isManualRoom ? "" : cardCode,
       room_no: roomNo,
       guest_name: guest.guest_name || "",
       entitled_pax: Number(guest.pax || 0),
@@ -2099,7 +2184,7 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
       ok: false,
       result: "already_checked_in",
       business_date: businessDate,
-      card_code: cardCode,
+      card_code: isManualRoom ? "" : cardCode,
       room_no: roomNo,
       guest_name: guest.guest_name || "",
       entitled_pax: Number(guest.pax || 0),
@@ -2122,7 +2207,7 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
     ok: true,
     result: "valid",
     business_date: businessDate,
-    card_code: cardCode,
+    card_code: isManualRoom ? "" : cardCode,
     room_no: roomNo,
     guest_name: guest.guest_name || "",
     entitled_pax: entitledPax,
@@ -2131,7 +2216,7 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, actualPaxIn
     breakfast_package: guest.breakfast_package || guest.package || "",
     special_package: guest.special_package || "",
     breakfast_eligible: true,
-    message: "Ready for breakfast check-in",
+    message: isManualRoom ? "Ready for manual room breakfast check-in" : "Ready for breakfast check-in",
     scanned_by: userId,
     device_name: deviceName,
     client_scan_time: new Date().toISOString(),
@@ -2181,9 +2266,13 @@ async function writeScanLog(db, payload) {
   return ref;
 }
 
-async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualPaxInput = null }) {
+async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoInput = null, actualPaxInput = null }) {
   const cardCode = normalizeCardCode(cardCodeInput);
-  if (!cardCode) throw makeAppError("CARD_REQUIRED", "Please scan or enter card code");
+  const manualRoomNo = normalizeRoomNo(roomNoInput);
+  const isManualRoom = !!manualRoomNo;
+  if (!cardCode && !manualRoomNo) {
+    throw makeAppError("CARD_OR_ROOM_REQUIRED", "Please scan card or enter room number");
+  }
 
   return runTransaction(db, async (tx) => {
     const configRef = doc(db, "settings", "app_config");
@@ -2193,25 +2282,28 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
     const config = configSnap.data();
     const businessDate = config.current_business_date;
 
-    const cardRef = doc(db, "card_bindings", cardCode);
-    const cardSnap = await tx.get(cardRef);
-    if (!cardSnap.exists()) throw makeAppError("INVALID_CARD", "Card not found in system");
+    let roomNo = manualRoomNo;
+    if (!isManualRoom) {
+      const cardRef = doc(db, "card_bindings", cardCode);
+      const cardSnap = await tx.get(cardRef);
+      if (!cardSnap.exists()) throw makeAppError("INVALID_CARD", "Card not found in system");
 
-    const binding = cardSnap.data();
-    if (!binding.active || !binding.room_no) {
-      throw makeAppError("UNASSIGNED_CARD", "This card is not assigned to any room");
+      const binding = cardSnap.data();
+      if (!binding.active || !binding.room_no) {
+        throw makeAppError("UNASSIGNED_CARD", "This card is not assigned to any room");
+      }
+      roomNo = binding.room_no;
     }
 
-    const roomNo = binding.room_no;
     const guestRef = doc(db, "guest_daily", buildDateRoomId(businessDate, roomNo));
     const guestSnap = await tx.get(guestRef);
     if (!guestSnap.exists()) {
-      throw makeAppError("ROOM_NOT_FOUND", "Assigned room not found in today's guest list");
+      throw makeAppError("ROOM_NOT_FOUND", "Room not found in today's guest list");
     }
 
     const guest = guestSnap.data();
     if (!guest.breakfast_eligible) {
-      throw makeAppError("NOT_ELIGIBLE", "Room is not eligible for breakfast");
+      throw makeAppError("NOT_ELIGIBLE", normalizePackage(guest.breakfast_package || guest.package || "") === "RO" ? "Room is RO. Payment required" : "Room is not eligible for breakfast");
     }
 
     const roomCheckinRef = doc(db, "room_checkin_daily", buildDateRoomId(businessDate, roomNo));
@@ -2231,7 +2323,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
       room_no: roomNo,
       checked_in: true,
       first_checkin_at: serverTimestamp(),
-      first_card_code: cardCode,
+      first_card_code: isManualRoom ? "" : cardCode,
       guest_name: guest.guest_name || "",
       entitled_pax: entitledPax,
       actual_pax: actualPax,
@@ -2240,6 +2332,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
       special_package: guest.special_package || "",
       confirmed_by: userId,
       device_name: deviceName,
+      manual_room_entry: isManualRoom,
       log_ref_id: logRef.id,
     });
 
@@ -2247,7 +2340,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
       business_date: businessDate,
       scan_time: serverTimestamp(),
       client_scan_time: new Date().toISOString(),
-      card_code: cardCode,
+      card_code: isManualRoom ? "" : cardCode,
       room_no: roomNo,
       guest_name: guest.guest_name || "",
       entitled_pax: entitledPax,
@@ -2257,16 +2350,17 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
       special_package: guest.special_package || "",
       breakfast_eligible: true,
       result: "checked_in",
-      message: "valid check-in",
+      message: isManualRoom ? "manual room check-in" : "valid check-in",
       device_name: deviceName,
       scanned_by: userId,
+      manual_room_entry: isManualRoom,
     });
 
     return {
       ok: true,
       result: "checked_in",
       business_date: businessDate,
-      card_code: cardCode,
+      card_code: isManualRoom ? "" : cardCode,
       room_no: roomNo,
       guest_name: guest.guest_name || "",
       entitled_pax: entitledPax,
@@ -2278,14 +2372,14 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualP
       scanned_by: userId,
       device_name: deviceName,
       client_scan_time: new Date().toISOString(),
-      message: "Breakfast check-in confirmed",
+      message: isManualRoom ? "Manual room breakfast check-in confirmed" : "Breakfast check-in confirmed",
       log_id: logRef.id,
     };
   });
 }
 
-async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, checkinMode, actualPaxInput = null }) {
-  const validation = await validateScan({ db, userId, deviceName, cardCodeInput, actualPaxInput });
+async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, roomNoInput = null, checkinMode, actualPaxInput = null }) {
+  const validation = await validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput });
 
   if (!validation.ok) {
     const shouldSkipLog = !normalizeRoomNo(validation.room_no) || validation.result === "room_not_found";
@@ -2301,7 +2395,7 @@ async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, che
   }
 
   try {
-    return await confirmCheckinTx({ db, userId, deviceName, cardCodeInput, actualPaxInput });
+    return await confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput });
   } catch (error) {
     if (error.code === "ALREADY_CHECKED_IN") {
       const alreadyPayload = {
@@ -2589,7 +2683,13 @@ function autoResetScanInput() {
 }
 
 function focusScanInput() {
-  setTimeout(() => els.scanCardCode?.focus(), 50);
+  setTimeout(() => {
+    if (state.restaurantInputMode === "room" && els.scanManualRoomNo) {
+      els.scanManualRoomNo.focus();
+      return;
+    }
+    els.scanCardCode?.focus();
+  }, 50);
 }
 
 function escapeHtml(text) {
