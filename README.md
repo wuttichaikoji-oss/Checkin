@@ -1,7 +1,15 @@
-# Laya Breakfast Card Check-in v1.1
+# Laya Breakfast Card Check-in v1.2 Room Check-in Stability
 
 Static web app for GitHub Pages + Firebase.
 
+
+## v1.2 room check-in stability updates
+- Fixed focus returning to Manual Room after a manual room check-in. The next scan now always returns to Card Code by default.
+- Changed auto-ready behavior so the latest result remains visible while inputs are cleared for the next guest.
+- Increased scanner auto-submit debounce to reduce partial card-code submissions from slower scanners.
+- Made log refresh non-blocking after scan success so the next scan is not delayed by Firestore log queries.
+- Room-not-found attempts now write to logs when a room number exists, making failed attempts traceable.
+- Improved room number normalization and fixed OTARO* package detection as RO.
 
 ## v1.1 updates
 - Daily upload now merges duplicate room rows automatically instead of silently keeping only the first row.

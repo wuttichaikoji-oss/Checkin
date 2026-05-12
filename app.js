@@ -26,6 +26,8 @@ import {
 
 const $ = (id) => document.getElementById(id);
 const PAGE_MODE = window.APP_PAGE_MODE || "full";
+const SCANNER_AUTO_SUBMIT_DELAY_MS = 650;
+const NEXT_SCAN_READY_DELAY_MS = 120;
 
 const els = {
   firebaseStatus: $("firebaseStatus"),
@@ -161,6 +163,8 @@ const state = {
   midnightCleanupTimer: null,
   midnightCleanupInterval: null,
   scanBusy: false,
+  scanQueued: false,
+  activeScanCode: "",
   scanAutoTimer: null,
   pendingRoPaymentResult: null,
 };
@@ -1271,20 +1275,34 @@ function scheduleAutoScanSubmit() {
 
   const mode = state.config.checkin_mode || "auto";
   const cardCode = normalizeCardCode(els.scanCardCode.value);
-  if (!state.config.scanner_auto_submit || mode !== "auto" || !cardCode || state.scanBusy) return;
+  if (!state.config.scanner_auto_submit || mode !== "auto" || !cardCode) return;
+
+  if (state.scanBusy) {
+    if (cardCode && cardCode !== state.activeScanCode) state.scanQueued = true;
+    return;
+  }
 
   state.scanAutoTimer = setTimeout(() => {
     const latestCode = normalizeCardCode(els.scanCardCode.value);
-    if (!latestCode || state.scanBusy) return;
+    if (!latestCode) return;
+    if (state.scanBusy) {
+      if (latestCode && latestCode !== state.activeScanCode) state.scanQueued = true;
+      return;
+    }
     handleScanValidate();
-  }, 180);
+  }, SCANNER_AUTO_SUBMIT_DELAY_MS);
 }
 
 async function handleScanValidate() {
-  if (state.scanBusy) return;
+  const requestedCode = normalizeCardCode(els.scanCardCode.value);
+  if (state.scanBusy) {
+    if (requestedCode && requestedCode !== state.activeScanCode) state.scanQueued = true;
+    return;
+  }
 
   try {
     state.scanBusy = true;
+    state.activeScanCode = requestedCode;
     state.restaurantInputMode = "card";
     clearTimeout(state.scanAutoTimer);
     if (!state.db) throw new Error("Firebase is not ready.");
@@ -1326,7 +1344,7 @@ async function handleScanValidate() {
       setMessage(els.scanMessage, result.message || result.result, !result.ok);
     }
 
-    await refreshLogs();
+    refreshLogsSoon();
     if (!needsRoPaymentPopup && ((state.config.checkin_mode || "auto") === "auto" || !result.ok)) {
       autoResetScanInput();
     }
@@ -1335,7 +1353,14 @@ async function handleScanValidate() {
     setMessage(els.scanMessage, friendlyError(error), true);
     autoResetScanInput();
   } finally {
+    const completedCode = state.activeScanCode;
     state.scanBusy = false;
+    if (state.scanQueued) {
+      const queuedCode = normalizeCardCode(els.scanCardCode.value);
+      state.scanQueued = false;
+      if (queuedCode && queuedCode !== completedCode) window.setTimeout(handleScanValidate, 80);
+    }
+    state.activeScanCode = "";
   }
 }
 
@@ -1385,7 +1410,7 @@ async function handleManualRoomValidate() {
       setMessage(els.scanMessage, result.message || result.result, !result.ok);
     }
 
-    await refreshLogs();
+    refreshLogsSoon();
     if (!needsRoPaymentPopup && ((state.config.checkin_mode || "auto") === "auto" || !result.ok)) {
       autoResetScanInput();
     }
@@ -1414,7 +1439,7 @@ async function handleManualConfirm() {
     renderScanResult(result);
     els.scanConfirmBtn.disabled = true;
     setMessage(els.scanMessage, "Breakfast check-in confirmed.");
-    await refreshLogs();
+    refreshLogsSoon();
     autoResetScanInput();
   } catch (error) {
     console.error(error);
@@ -1444,7 +1469,7 @@ async function handleManualConfirm() {
       state.currentScanResult = payload;
       renderScanResult(payload);
       setMessage(els.scanMessage, payload.message, true);
-      await refreshLogs();
+      refreshLogsSoon();
       autoResetScanInput();
       return;
     }
@@ -1455,14 +1480,24 @@ async function handleManualConfirm() {
 
 function resetScanResult() {
   state.currentScanResult = null;
+  prepareNextScan({ keepMessage: false });
+  renderScanResult(null);
+}
+
+function prepareNextScan({ keepMessage = true } = {}) {
   state.pendingRoPaymentResult = null;
   hideRoPaymentPopup();
+  clearTimeout(state.scanAutoTimer);
   els.scanCardCode.value = "";
   if (els.scanManualRoomNo) els.scanManualRoomNo.value = "";
   els.scanActualPax.value = "";
   els.scanConfirmBtn.disabled = true;
-  renderScanResult(null);
-  setMessage(els.scanMessage, "");
+  state.restaurantInputMode = "card";
+  if (!keepMessage) {
+    setMessage(els.scanMessage, "");
+  } else if (state.currentScanResult) {
+    setMessage(els.scanMessage, "Ready for next scan. Last result remains shown on the right.");
+  }
   focusScanInput();
 }
 
@@ -1594,7 +1629,7 @@ async function handleRoPaymentDecision(decision) {
       setMessage(els.scanMessage, "แขกปฏิเสธไม่ทาน · ไม่ได้รับชำระเงิน", true);
     }
 
-    await refreshLogs();
+    refreshLogsSoon();
     hideRoPaymentPopup();
     state.pendingRoPaymentResult = null;
     autoResetScanInput();
@@ -2659,7 +2694,7 @@ async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, roo
   const validation = await validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput });
 
   if (!validation.ok) {
-    const shouldSkipLog = !normalizeRoomNo(validation.room_no) || validation.result === "room_not_found";
+    const shouldSkipLog = !normalizeRoomNo(validation.room_no);
     if (shouldSkipLog) {
       return validation;
     }
@@ -2845,14 +2880,15 @@ function firstDefined(obj, keys) {
 function normalizePackage(raw) {
   const value = String(raw || "").trim().toUpperCase();
   if (!value) return "";
-  if (["RO", "ROOM ONLY", "OTARO"].includes(value) || /^OTARO/.test(value)) return "RO";
-  if (["RB", "ROOM BREAKFAST", "ROOM WITH BREAKFAST"].includes(value)) return "RB";
-  if (["BB", "BED BREAKFAST", "BED & BREAKFAST", "B&B"].includes(value)) return "BB";
-  if (["HB", "HALF BOARD"].includes(value)) return "HB";
-  if (["FB", "FULL BOARD"].includes(value)) return "FB";
-  if (["AI", "AIP", "ALL INCLUSIVE"].includes(value)) return "AI";
-  if (["EXEC", "EXECUTIVE", "EXBF", "EXECUTIVE BREAKFAST", "EXECUTIVE BF"].includes(value)) return "EXECUTIVE";
-  return value;
+  const compact = value.replace(/\s+/g, " ");
+  if (["RO", "ROOM ONLY", "OTARO"].includes(compact) || /^OTARO(\b|[^A-Z0-9])/.test(compact)) return "RO";
+  if (["RB", "ROOM BREAKFAST", "ROOM WITH BREAKFAST", "ROOM + BREAKFAST"].includes(compact)) return "RB";
+  if (["BB", "BED BREAKFAST", "BED & BREAKFAST", "B&B", "BED AND BREAKFAST"].includes(compact)) return "BB";
+  if (["HB", "HALF BOARD"].includes(compact)) return "HB";
+  if (["FB", "FULL BOARD"].includes(compact)) return "FB";
+  if (["AI", "AIP", "ALL INCLUSIVE", "ALL-INCLUSIVE"].includes(compact)) return "AI";
+  if (["EXEC", "EXECUTIVE", "EXBF", "EXECUTIVE BREAKFAST", "EXECUTIVE BF"].includes(compact)) return "EXECUTIVE";
+  return compact;
 }
 
 function normalizeSpecialPackage(raw) {
@@ -2887,7 +2923,10 @@ function normalizeCardCode(raw) {
 }
 
 function normalizeRoomNo(raw) {
-  return String(raw || "").trim().toUpperCase();
+  return String(raw || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s \-_/]+/g, "");
 }
 
 function makeAppError(code, message) {
@@ -2955,8 +2994,14 @@ function downloadTextFile(filename, content) {
 
 function autoResetScanInput() {
   setTimeout(() => {
-    resetScanResult();
-  }, 1400);
+    prepareNextScan({ keepMessage: true });
+  }, NEXT_SCAN_READY_DELAY_MS);
+}
+
+function refreshLogsSoon() {
+  refreshLogs().catch((error) => {
+    console.error("Refresh logs failed", error);
+  });
 }
 
 function focusScanInput() {
