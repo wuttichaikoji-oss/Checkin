@@ -126,6 +126,10 @@ const DEFAULT_CONFIG = {
   allow_override_confirm: false,
   scanner_auto_submit: true,
   default_actual_pax_mode: "use_entitled_pax",
+  // Safety: keep guest data and business date under admin control by default.
+  // Turn these on in Firestore settings/app_config only if you really want automatic rollover/cleanup.
+  auto_rollover_business_date: false,
+  enable_auto_guest_cleanup: false,
   created_at: null,
   updated_at: null,
   updated_by: "system",
@@ -167,6 +171,7 @@ const state = {
   activeScanCode: "",
   scanAutoTimer: null,
   pendingRoPaymentResult: null,
+  refreshLogsTimer: null,
 };
 
 init();
@@ -791,9 +796,17 @@ async function runGuestDailyCleanupIfNeeded({ forceRolloverToToday = false } = {
   if (!state.db) return 0;
 
   const today = todayInBangkok();
-  const deleted = await deleteGuestDailyBeforeDate(today);
+  const allowAutoCleanup = state.config.enable_auto_guest_cleanup === true;
+  const allowAutoRollover = state.config.auto_rollover_business_date === true;
 
-  const shouldRollover = forceRolloverToToday || (state.config.current_business_date && state.config.current_business_date < today);
+  // Do not delete guest_daily automatically unless explicitly enabled in settings/app_config.
+  // The previous behavior deleted all guest_daily rows older than today every time any client opened the app,
+  // which could make the system look like it stopped saving after a date rollover or when the hotel reused a business date.
+  const deleted = allowAutoCleanup ? await deleteGuestDailyBeforeDate(today) : 0;
+
+  const shouldRollover = allowAutoRollover && (
+    forceRolloverToToday || (state.config.current_business_date && state.config.current_business_date < today)
+  );
   if (shouldRollover) {
     await setDoc(doc(state.db, "settings", "app_config"), {
       current_business_date: today,
@@ -2691,6 +2704,38 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
 }
 
 async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, roomNoInput = null, checkinMode, actualPaxInput = null }) {
+  const mode = checkinMode || "auto";
+
+  // Manual mode still validates first because the user must press Confirm afterward.
+  if (mode === "manual") {
+    return validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput });
+  }
+
+  // Auto mode: write the check-in directly in one transaction.
+  // Previous flow validated first, then ran the transaction, which doubled Firestore reads on every successful scan.
+  try {
+    return await confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput });
+  } catch (error) {
+    // For expected business-rule failures, fall back to validation so the UI still shows a full result
+    // and failed room attempts are logged as before.
+    const expectedCodes = new Set([
+      "INVALID_CARD",
+      "UNASSIGNED_CARD",
+      "ROOM_NOT_FOUND",
+      "NOT_ELIGIBLE",
+      "ALREADY_CHECKED_IN",
+      "CARD_OR_ROOM_REQUIRED",
+    ]);
+
+    if (!expectedCodes.has(error.code)) {
+      throw error;
+    }
+
+    return validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput });
+  }
+}
+
+async function validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput = null, actualPaxInput = null }) {
   const validation = await validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput });
 
   if (!validation.ok) {
@@ -2702,25 +2747,7 @@ async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, roo
     return { ...validation, log_id: logRef.id };
   }
 
-  if (checkinMode === "manual") {
-    return validation;
-  }
-
-  try {
-    return await confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput });
-  } catch (error) {
-    if (error.code === "ALREADY_CHECKED_IN") {
-      const alreadyPayload = {
-        ...validation,
-        ok: false,
-        result: "already_checked_in",
-        message: "Room already checked in today",
-      };
-      const logRef = await writeScanLog(db, alreadyPayload);
-      return { ...alreadyPayload, log_id: logRef.id };
-    }
-    throw error;
-  }
+  return validation;
 }
 
 async function readSheetFile(file) {
@@ -2999,9 +3026,12 @@ function autoResetScanInput() {
 }
 
 function refreshLogsSoon() {
-  refreshLogs().catch((error) => {
-    console.error("Refresh logs failed", error);
-  });
+  clearTimeout(state.refreshLogsTimer);
+  state.refreshLogsTimer = setTimeout(() => {
+    refreshLogs().catch((error) => {
+      console.error("Refresh logs failed", error);
+    });
+  }, 600);
 }
 
 function focusScanInput() {
