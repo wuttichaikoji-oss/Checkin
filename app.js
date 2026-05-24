@@ -174,6 +174,7 @@ const state = {
   scanAutoTimer: null,
   pendingRoPaymentResult: null,
   refreshLogsTimer: null,
+  guestDailyLookupCache: new Map(),
 };
 
 init();
@@ -486,6 +487,7 @@ async function saveSettingsToFirestore() {
     startGuestDailyRealtime();
     startFoAssignLogs();
     scheduleGuestDailyMidnightCleanup();
+    clearGuestDailyLookupCache();
     setMessage(els.settingsMessage, "Settings saved.");
   } catch (error) {
     console.error(error);
@@ -621,6 +623,7 @@ async function importUploadRows() {
     }
 
     await batch.commit();
+    clearGuestDailyLookupCache(businessDate);
     const syncedCards = await syncFoPreAssignedCardsForDate(state.db, businessDate, state.operator.userId);
     await setDoc(doc(state.db, "settings", "app_config"), {
       current_business_date: businessDate,
@@ -656,6 +659,7 @@ async function handleDeleteSelectedDateGuestData() {
     state.uploadRows = [];
     renderUploadPreview();
     startGuestDailyRealtime();
+    clearGuestDailyLookupCache(businessDate);
     setMessage(els.uploadMessage, `Deleted ${deleted} guest room row(s) for ${businessDate}.`);
   } catch (error) {
     console.error(error);
@@ -839,6 +843,7 @@ async function runGuestDailyCleanupIfNeeded({ forceRolloverToToday = false } = {
 
   if (deleted > 0) {
     startGuestDailyRealtime();
+    clearGuestDailyLookupCache();
     setMessage(els.uploadMessage, `Auto-cleaned ${deleted} guest room row(s) from previous day(s). Ready for ${today}.`);
     setMessage(els.settingsMessage, `Auto-cleaned previous guest_daily data. Current business date: ${today}.`);
   }
@@ -1097,7 +1102,7 @@ async function handleSearchRoom() {
 
 async function searchRoomSummary(roomNo) {
   const businessDate = state.config.current_business_date || todayInBangkok();
-  const guestLookup = await getGuestDailyLookup(state.db, businessDate, roomNo, { repair: true });
+  const guestLookup = await getGuestDailyLookup(state.db, businessDate, roomNo, { repair: true, allowSlowFallback: true });
   const guestSnap = guestLookup?.snap || null;
 
   const activeCardsQ = query(
@@ -2088,7 +2093,7 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, manualGuestN
 
   const activeCards = await getActiveCardsForRoom(db, roomNo);
   const preConfig = await getAppConfig(db);
-  await getGuestDailyLookup(db, preConfig.current_business_date, roomNo, { repair: true });
+  await getGuestDailyLookup(db, preConfig.current_business_date, roomNo, { repair: true, allowSlowFallback: true });
 
   return runTransaction(db, async (tx) => {
     const configRef = doc(db, "settings", "app_config");
@@ -2181,7 +2186,7 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, manualGues
 
   const targetActiveCards = (await getActiveCardsForRoom(db, targetRoomNo)).filter((row) => row.id !== cardCode);
   const preConfig = await getAppConfig(db);
-  await getGuestDailyLookup(db, preConfig.current_business_date, targetRoomNo, { repair: true });
+  await getGuestDailyLookup(db, preConfig.current_business_date, targetRoomNo, { repair: true, allowSlowFallback: true });
 
   return runTransaction(db, async (tx) => {
     const configRef = doc(db, "settings", "app_config");
@@ -2375,7 +2380,7 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput
     binding = await getManualRoomBindingFallback(db, roomNo);
   }
 
-  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: true });
+  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: true, allowSlowFallback: true });
   const guestSnap = guestLookup?.snap || null;
   if (!guestSnap?.exists()) {
     const fallbackPax = Number(binding?.pax || 0);
@@ -3033,30 +3038,92 @@ function parseActualPax(raw, fallback) {
   return Math.floor(num);
 }
 
+function guestDailyCacheKey(businessDate, roomNo) {
+  return `${businessDate}::${normalizeRoomNo(roomNo)}`;
+}
+
+function getCachedGuestDailyLookup(businessDate, roomNo) {
+  const key = guestDailyCacheKey(businessDate, roomNo);
+  const cached = state.guestDailyLookupCache?.get(key);
+  if (!cached) return null;
+  // Keep the cache intentionally short so FO imports / corrections are picked up quickly.
+  if (Date.now() - Number(cached.cached_at || 0) > 30_000) {
+    state.guestDailyLookupCache.delete(key);
+    return null;
+  }
+  return cached.value;
+}
+
+function setCachedGuestDailyLookup(businessDate, roomNo, value) {
+  if (!state.guestDailyLookupCache) state.guestDailyLookupCache = new Map();
+  state.guestDailyLookupCache.set(guestDailyCacheKey(businessDate, roomNo), {
+    cached_at: Date.now(),
+    value,
+  });
+}
+
+function clearGuestDailyLookupCache(businessDate = "") {
+  if (!state.guestDailyLookupCache) return;
+  if (!businessDate) {
+    state.guestDailyLookupCache.clear();
+    return;
+  }
+  const prefix = `${businessDate}::`;
+  Array.from(state.guestDailyLookupCache.keys()).forEach((key) => {
+    if (key.startsWith(prefix)) state.guestDailyLookupCache.delete(key);
+  });
+}
+
 async function getGuestDailyLookup(db, businessDate, roomNo, options = {}) {
   const normalizedRoomNo = normalizeRoomNo(roomNo);
   if (!db || !businessDate || !normalizedRoomNo) return { exists: false, snap: null, data: null, ref: null };
+
+  const useCache = options.cache !== false;
+  if (useCache) {
+    const cached = getCachedGuestDailyLookup(businessDate, normalizedRoomNo);
+    if (cached) return cached;
+  }
 
   const canonicalId = buildDateRoomId(businessDate, normalizedRoomNo);
   const canonicalRef = doc(db, "guest_daily", canonicalId);
   const canonicalSnap = await getDoc(canonicalRef);
   if (canonicalSnap.exists()) {
-    return { exists: true, snap: canonicalSnap, data: canonicalSnap.data(), ref: canonicalRef, repaired: false };
+    const found = { exists: true, snap: canonicalSnap, data: canonicalSnap.data(), ref: canonicalRef, repaired: false, lookup_method: "canonical_doc" };
+    if (useCache) setCachedGuestDailyLookup(businessDate, normalizedRoomNo, found);
+    return found;
   }
 
-  const byDateSnap = await getDocs(query(
+  // Fast fallback: look up only this room, then confirm the business date.
+  // This avoids the previous slow path that loaded every room for the day on every scan.
+  const byRoomSnap = await getDocs(query(
     collection(db, "guest_daily"),
-    where("business_date", "==", businessDate),
-    limit(5000)
+    where("room_no", "==", normalizedRoomNo),
+    limit(80)
   ));
 
-  const matchedDoc = byDateSnap.docs.find((item) => {
+  let matchedDoc = byRoomSnap.docs.find((item) => {
     const data = item.data() || {};
-    return normalizeRoomNo(data.room_no || "") === normalizedRoomNo;
+    return String(data.business_date || "") === businessDate && normalizeRoomNo(data.room_no || "") === normalizedRoomNo;
   });
 
+  // Compatibility fallback for older imports that kept spaces/dashes/lowercase in room_no.
+  // It runs only after the fast room query fails, so normal scans stay fast.
+  if (!matchedDoc && options.allowSlowFallback === true) {
+    const byDateSnap = await getDocs(query(
+      collection(db, "guest_daily"),
+      where("business_date", "==", businessDate),
+      limit(5000)
+    ));
+    matchedDoc = byDateSnap.docs.find((item) => {
+      const data = item.data() || {};
+      return normalizeRoomNo(data.room_no || "") === normalizedRoomNo;
+    });
+  }
+
   if (!matchedDoc) {
-    return { exists: false, snap: null, data: null, ref: canonicalRef, repaired: false };
+    const missing = { exists: false, snap: null, data: null, ref: canonicalRef, repaired: false, lookup_method: "not_found" };
+    if (useCache) setCachedGuestDailyLookup(businessDate, normalizedRoomNo, missing);
+    return missing;
   }
 
   const matchedData = matchedDoc.data() || {};
@@ -3072,10 +3139,14 @@ async function getGuestDailyLookup(db, businessDate, roomNo, options = {}) {
     }, { merge: true });
 
     const repairedSnap = await getDoc(canonicalRef);
-    return { exists: repairedSnap.exists(), snap: repairedSnap, data: repairedSnap.data(), ref: canonicalRef, repaired: true };
+    const repaired = { exists: repairedSnap.exists(), snap: repairedSnap, data: repairedSnap.data(), ref: canonicalRef, repaired: true, lookup_method: "room_query_repaired" };
+    if (useCache) setCachedGuestDailyLookup(businessDate, normalizedRoomNo, repaired);
+    return repaired;
   }
 
-  return { exists: true, snap: matchedDoc, data: matchedData, ref: matchedDoc.ref, repaired: false };
+  const found = { exists: true, snap: matchedDoc, data: matchedData, ref: matchedDoc.ref, repaired: false, lookup_method: "room_query" };
+  if (useCache) setCachedGuestDailyLookup(businessDate, normalizedRoomNo, found);
+  return found;
 }
 
 async function ensureCanonicalGuestDailyBeforeCheckin(db, cardCode, manualRoomNo) {
@@ -3094,7 +3165,7 @@ async function ensureCanonicalGuestDailyBeforeCheckin(db, cardCode, manualRoomNo
   }
 
   if (businessDate && roomNo) {
-    await getGuestDailyLookup(db, businessDate, roomNo, { repair: true });
+    await getGuestDailyLookup(db, businessDate, roomNo, { repair: true, allowSlowFallback: true });
   }
 }
 
