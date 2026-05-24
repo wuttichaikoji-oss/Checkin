@@ -710,7 +710,7 @@ async function syncFoPreAssignedCardsForDate(db, businessDate, userId) {
       package: guest.package || "",
       breakfast_package: guest.breakfast_package || guest.package || "",
       special_package: guest.special_package || "",
-      breakfast_eligible: !!guest.breakfast_eligible,
+      breakfast_eligible: isBreakfastEligibleRecord(guest),
       fo_pre_assigned: false,
       assignment_status: "ACTIVE",
       guest_data_pending: false,
@@ -921,7 +921,7 @@ function renderImportSummaryFromRows(rows) {
     const pkg = String(row.breakfast_package || row.package || "UNKNOWN").trim() || "UNKNOWN";
     totalPax += pax;
     packages[pkg] = (packages[pkg] || 0) + 1;
-    if (row.breakfast_eligible) eligible += 1;
+    if (isBreakfastEligibleRecord(row)) eligible += 1;
   }
 
   els.statRooms.textContent = String(safeRows.length);
@@ -950,7 +950,7 @@ function renderUploadPreview() {
         <td>${escapeHtml(row.guest_name)}</td>
         <td>${row.pax}</td>
         <td>${escapeHtml(row.package)}</td>
-        <td>${row.breakfast_eligible ? "Yes" : "No"}</td>
+        <td>${isBreakfastEligibleRecord(row) ? "Yes" : "No"}</td>
       </tr>
     `)
     .join("");
@@ -1029,7 +1029,7 @@ function renderImportedGuestData(errorText = "") {
         <td>${Number(row.pax || 0)}</td>
         <td>${escapeHtml(row.breakfast_package || row.package || "")}</td>
         <td>${escapeHtml(row.special_package || "")}</td>
-        <td>${row.breakfast_eligible ? "Yes" : "No"}</td>
+        <td>${isBreakfastEligibleRecord(row) ? "Yes" : "No"}</td>
       </tr>
     `)
     .join("");
@@ -1087,7 +1087,7 @@ async function handleSearchRoom() {
       return;
     }
 
-    const eligibleText = state.currentRoom.breakfast_eligible ? "" : " but not eligible for breakfast";
+    const eligibleText = isBreakfastEligibleRecord(state.currentRoom) ? "" : " but not eligible for breakfast";
     setMessage(els.foMessage, `Room found. ${count} active card(s)${eligibleText}.`);
   } catch (error) {
     console.error(error);
@@ -1124,7 +1124,7 @@ async function searchRoomSummary(roomNo) {
       package: fallbackBinding?.package || "",
       breakfast_package: fallbackBinding?.breakfast_package || fallbackBinding?.package || "",
       special_package: fallbackBinding?.special_package || "",
-      breakfast_eligible: !!fallbackBinding?.breakfast_eligible,
+      breakfast_eligible: isBreakfastEligibleRecord(fallbackBinding),
       activeCards,
       checked_in_today: checkinSnap.exists(),
       fo_pre_assigned: hasFoPreAssigned,
@@ -1141,11 +1141,11 @@ async function searchRoomSummary(roomNo) {
     package: guest.package || "",
     breakfast_package: guest.breakfast_package || guest.package || "",
     special_package: guest.special_package || "",
-    breakfast_eligible: !!guest.breakfast_eligible,
+    breakfast_eligible: isBreakfastEligibleRecord(guest),
     activeCards,
     checked_in_today: checkinSnap.exists(),
     fo_pre_assigned: false,
-    status_label: guest.breakfast_eligible ? "Ready" : "Not Eligible",
+    status_label: isBreakfastEligibleRecord(guest) ? "Ready" : "Not Eligible",
   };
 }
 
@@ -1173,14 +1173,14 @@ function renderRoomPreview() {
   const statusText = !room
     ? "-"
     : room.exists
-      ? room.status_label || (room.breakfast_eligible ? "Ready" : "Not Eligible")
+      ? room.status_label || (isBreakfastEligibleRecord(room) ? "Ready" : "Not Eligible")
       : room.fo_pre_assigned
         ? "FO Pre-Assigned"
         : "Not in Daily Guest";
   const breakfastInfo = !room
     ? "-"
     : room.exists
-      ? (room.breakfast_eligible ? "Yes" : "No")
+      ? (isBreakfastEligibleRecord(room) ? "Yes" : "No")
       : "Waiting Daily Upload";
   const rows = [
     ["Room No", room?.room_no || "-"],
@@ -1590,8 +1590,9 @@ function formatScanResultTime(result) {
 
 function shouldShowRoPaymentPopup(result) {
   if (!result || result.ok) return false;
-  if (result.result !== "not_eligible") return false;
-  return normalizePackage(result.breakfast_package || result.package || "") === "RO";
+  const isRo = isRoomOnlyPackage(result) || /room\s+is\s+ro/i.test(String(result.message || ""));
+  if (!isRo) return false;
+  return result.result === "not_eligible" || result.payment_required === true;
 }
 
 function showRoPaymentPopup(result) {
@@ -2101,7 +2102,7 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, manualGuestN
     const guestSnap = await tx.get(guestRef);
     const guest = guestSnap.exists() ? guestSnap.data() : null;
 
-    if (guest && !guest.breakfast_eligible && !allowAssignNotEligible) {
+    if (guest && !isBreakfastEligibleRecord(guest) && !allowAssignNotEligible) {
       throw makeAppError("NOT_ELIGIBLE", "Room is not eligible for breakfast");
     }
 
@@ -2133,7 +2134,7 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, manualGuestN
       package: guest?.package || "",
       breakfast_package: guest?.breakfast_package || guest?.package || "",
       special_package: guest?.special_package || "",
-      breakfast_eligible: guest ? !!guest.breakfast_eligible : false,
+      breakfast_eligible: guest ? isBreakfastEligibleRecord(guest) : false,
       fo_pre_assigned: isFoPreAssigned,
       assignment_status: isFoPreAssigned ? "FO_PRE_ASSIGNED" : "ACTIVE",
       guest_data_pending: isFoPreAssigned,
@@ -2215,7 +2216,7 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, manualGues
     const guestSnap = await tx.get(guestRef);
     const guest = guestSnap.exists() ? guestSnap.data() : null;
 
-    if (guest && !guest.breakfast_eligible && !allowAssignNotEligible) {
+    if (guest && !isBreakfastEligibleRecord(guest) && !allowAssignNotEligible) {
       throw makeAppError("NOT_ELIGIBLE", "Room is not eligible for breakfast");
     }
 
@@ -2235,7 +2236,7 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, manualGues
       package: guest?.package || "",
       breakfast_package: guest?.breakfast_package || guest?.package || "",
       special_package: guest?.special_package || "",
-      breakfast_eligible: guest ? !!guest.breakfast_eligible : false,
+      breakfast_eligible: guest ? isBreakfastEligibleRecord(guest) : false,
       fo_pre_assigned: isFoPreAssigned,
       assignment_status: isFoPreAssigned ? "FO_PRE_ASSIGNED" : "ACTIVE",
       guest_data_pending: isFoPreAssigned,
@@ -2391,7 +2392,7 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput
       package: binding?.package || "",
       breakfast_package: binding?.breakfast_package || binding?.package || "",
       special_package: binding?.special_package || "",
-      breakfast_eligible: !!binding?.breakfast_eligible,
+      breakfast_eligible: isBreakfastEligibleRecord(binding),
       message: "Room not found in today's guest list",
       scanned_by: userId,
       device_name: deviceName,
@@ -2400,9 +2401,10 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput
   }
 
   const guest = guestSnap.data();
-  if (!guest.breakfast_eligible) {
+  const guestBreakfastEligible = isBreakfastEligibleRecord(guest);
+  if (!guestBreakfastEligible) {
     const breakfastPackage = guest.breakfast_package || guest.package || "";
-    const isRoRoom = normalizePackage(breakfastPackage) === "RO";
+    const isRoRoom = isRoomOnlyPackage(guest);
     return {
       ok: false,
       result: "not_eligible",
@@ -2416,6 +2418,10 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput
       breakfast_package: breakfastPackage,
       special_package: guest.special_package || "",
       breakfast_eligible: false,
+      payment_required: isRoRoom,
+      payment_status: isRoRoom ? "pending" : "",
+      payment_amount: 0,
+      payment_currency: isRoRoom ? "THB" : "",
       message: isRoRoom ? "Room is RO. Payment required" : "Room is not eligible for breakfast",
       scanned_by: userId,
       device_name: deviceName,
@@ -2619,9 +2625,13 @@ async function writeScanLog(db, payload) {
     package: payload.package || "",
     breakfast_package: payload.breakfast_package || payload.package || "",
     special_package: payload.special_package || "",
-    breakfast_eligible: !!payload.breakfast_eligible,
+    breakfast_eligible: isBreakfastEligibleRecord(payload),
     result: payload.result || "",
     message: payload.message || "",
+    payment_required: !!payload.payment_required,
+    payment_status: payload.payment_status || "",
+    payment_amount: Number(payload.payment_amount || 0),
+    payment_currency: payload.payment_currency || "",
     device_name: payload.device_name || "",
     scanned_by: payload.scanned_by || "",
   });
@@ -2661,10 +2671,10 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
   }
   const guest = guestLookup.data || guestLookup.snap?.data() || {};
 
-  if (!guest.breakfast_eligible) {
+  if (!isBreakfastEligibleRecord(guest)) {
     throw makeAppError(
       "NOT_ELIGIBLE",
-      normalizePackage(guest.breakfast_package || guest.package || "") === "RO"
+      isRoomOnlyPackage(guest)
         ? "Room is RO. Payment required"
         : "Room is not eligible for breakfast"
     );
@@ -2982,6 +2992,33 @@ function normalizeSpecialPackage(raw) {
 
 function deriveBreakfastEligible(pkg) {
   return !["", "RO"].includes(pkg);
+}
+
+function isRoomOnlyPackage(rowOrPackage) {
+  if (rowOrPackage && typeof rowOrPackage === "object") {
+    return normalizePackage(rowOrPackage.breakfast_package || rowOrPackage.package || "") === "RO";
+  }
+  return normalizePackage(rowOrPackage) === "RO";
+}
+
+function isBreakfastEligibleRecord(row) {
+  const source = row || {};
+  const pkg = normalizePackage(source.breakfast_package || source.package || "");
+
+  // Package RO / ROOM ONLY / OTARO must always require payment, even if old data
+  // accidentally stored breakfast_eligible as true/Yes during a previous import.
+  if (pkg === "RO") return false;
+
+  const raw = source.breakfast_eligible;
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "number") return raw > 0;
+  if (raw == null || raw === "") return deriveBreakfastEligible(pkg);
+
+  const text = String(raw).trim().toLowerCase();
+  if (["0", "false", "no", "n", "not eligible", "noteligible", "room only", "room-only", "ro"].includes(text)) return false;
+  if (["1", "true", "yes", "y", "eligible", "include", "included"].includes(text)) return true;
+
+  return deriveBreakfastEligible(pkg);
 }
 
 function normalizeBoolean(value) {
