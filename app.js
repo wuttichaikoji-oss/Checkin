@@ -1337,6 +1337,16 @@ function scheduleAutoScanSubmit() {
 
 async function handleScanValidate() {
   const requestedCode = normalizeCardCode(els.scanCardCode.value);
+  const requestedRoom = normalizeRoomNo(els.scanManualRoomNo?.value || "");
+
+  // The primary button should respect the room field. Previously it always ran the card-scan
+  // path, so staff could type B217 in Manual Room No, press Scan / Check-in, and get a
+  // misleading not-found result even though the Manual Room button found the room.
+  if (requestedRoom && (!requestedCode || state.restaurantInputMode === "room" || document.activeElement === els.scanManualRoomNo)) {
+    await handleManualRoomValidate();
+    return;
+  }
+
   if (state.scanBusy) {
     if (requestedCode && requestedCode !== state.activeScanCode) state.scanQueued = true;
     return;
@@ -2488,7 +2498,7 @@ async function confirmRoPaidCheckinTx({ db, logId, userId, deviceName, sourceRes
 
   // Robust Daily lookup: the Daily table is queried by business_date, but older imports may
   // have non-canonical document IDs. Do not depend on guest_daily/{date_room} here.
-  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: false });
+  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: false, allowSlowFallback: true });
   if (!guestLookup?.exists) throw makeAppError("ROOM_NOT_FOUND", "Room not found in today's guest list");
   const guest = guestLookup.data || guestLookup.snap?.data() || {};
 
@@ -2670,7 +2680,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
   // Robust Daily lookup: the screen that shows Daily uses a query by business_date.
   // The check-in must use the same logic instead of only reading guest_daily/{date_room},
   // because older/partial imports can show B217 in Daily but store it under a different doc ID.
-  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: false });
+  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: false, allowSlowFallback: true });
   if (!guestLookup?.exists) {
     throw makeAppError("ROOM_NOT_FOUND", "Room not found in today's guest list");
   }
