@@ -140,6 +140,10 @@
                 <span>Room No</span>
                 <input type="text" id="foRoomNo" placeholder="A105" autocomplete="off" />
               </label>
+              <label class="kiosk-field">
+                <span>Guest Name (optional)</span>
+                <input type="text" id="foGuestName" placeholder="Guest name" autocomplete="off" />
+              </label>
             </div>
 
             <div class="button-row fo-kiosk-actions">
@@ -222,6 +226,10 @@
               <label class="full">
                 <span>Manual Room No (if guest forgot card)</span>
                 <input type="text" id="scanManualRoomNo" placeholder="Type room number and press Enter" />
+              </label>
+              <label class="full">
+                <span>Guest Name (optional for room not found)</span>
+                <input type="text" id="scanManualGuestName" placeholder="Type guest name if room is not in Daily Guest Upload" />
               </label>
               <label>
                 <span>Actual Pax (auto from Daily Guest Upload)</span>
@@ -431,6 +439,6 @@
   </div>
 
   <script>window.APP_PAGE_MODE = "fo_assign";</script>
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=20260524-room-lookup-v2"></script>
 </body>
 </html>

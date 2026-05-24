@@ -53,6 +53,7 @@ const els = {
   foCardCode: $("foCardCode"),
   foSearchCardBtn: $("foSearchCardBtn"),
   foRoomNo: $("foRoomNo"),
+  foGuestName: $("foGuestName"),
   foSearchRoomBtn: $("foSearchRoomBtn"),
   foAssignBtn: $("foAssignBtn"),
   foReassignBtn: $("foReassignBtn"),
@@ -69,6 +70,7 @@ const els = {
 
   scanCardCode: $("scanCardCode"),
   scanManualRoomNo: $("scanManualRoomNo"),
+  scanManualGuestName: $("scanManualGuestName"),
   scanActualPax: $("scanActualPax"),
   scanModeBadge: $("scanModeBadge"),
   scanValidateBtn: $("scanValidateBtn"),
@@ -279,6 +281,13 @@ function bindEvents() {
     }
   });
 
+  els.foGuestName?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleAssignCard();
+    }
+  });
+
   els.scanValidateBtn.addEventListener("click", handleScanValidate);
   els.scanManualRoomBtn?.addEventListener("click", handleManualRoomValidate);
   els.scanConfirmBtn.addEventListener("click", handleManualConfirm);
@@ -305,6 +314,17 @@ function bindEvents() {
 
   els.scanManualRoomNo?.addEventListener("input", () => {
     state.restaurantInputMode = "room";
+  });
+
+  els.scanManualGuestName?.addEventListener("input", () => {
+    state.restaurantInputMode = "room";
+  });
+
+  els.scanManualGuestName?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleManualRoomValidate();
+    }
   });
 
   els.roPaymentPaidBtn?.addEventListener("click", () => {
@@ -1077,8 +1097,8 @@ async function handleSearchRoom() {
 
 async function searchRoomSummary(roomNo) {
   const businessDate = state.config.current_business_date || todayInBangkok();
-  const guestRef = doc(state.db, "guest_daily", buildDateRoomId(businessDate, roomNo));
-  const guestSnap = await getDoc(guestRef);
+  const guestLookup = await getGuestDailyLookup(state.db, businessDate, roomNo, { repair: true });
+  const guestSnap = guestLookup?.snap || null;
 
   const activeCardsQ = query(
     collection(state.db, "card_bindings"),
@@ -1093,17 +1113,18 @@ async function searchRoomSummary(roomNo) {
   const checkinRef = doc(state.db, "room_checkin_daily", buildDateRoomId(businessDate, roomNo));
   const checkinSnap = await getDoc(checkinRef);
   const hasFoPreAssigned = activeCards.some((row) => row.fo_pre_assigned === true || row.assignment_status === "FO_PRE_ASSIGNED");
+  const fallbackBinding = pickBestRoomBinding(activeCards);
 
-  if (!guestSnap.exists()) {
+  if (!guestSnap?.exists()) {
     return {
       exists: false,
       room_no: roomNo,
-      guest_name: "",
-      pax: 0,
-      package: "",
-      breakfast_package: "",
-      special_package: "",
-      breakfast_eligible: false,
+      guest_name: fallbackBinding?.guest_name || "",
+      pax: Number(fallbackBinding?.pax || 0),
+      package: fallbackBinding?.package || "",
+      breakfast_package: fallbackBinding?.breakfast_package || fallbackBinding?.package || "",
+      special_package: fallbackBinding?.special_package || "",
+      breakfast_eligible: !!fallbackBinding?.breakfast_eligible,
       activeCards,
       checked_in_today: checkinSnap.exists(),
       fo_pre_assigned: hasFoPreAssigned,
@@ -1184,6 +1205,7 @@ async function handleAssignCard() {
       userId: state.operator.userId,
       cardCodeInput: els.foCardCode.value,
       roomInput: els.foRoomNo.value,
+      manualGuestNameInput: els.foGuestName?.value || "",
       allowAssignNotEligible: state.config.allow_assign_not_eligible,
     });
 
@@ -1213,6 +1235,7 @@ async function handleReassignCard() {
       userId: state.operator.userId,
       cardCodeInput: els.foCardCode.value,
       roomInput: els.foRoomNo.value,
+      manualGuestNameInput: els.foGuestName?.value || "",
       allowAssignNotEligible: state.config.allow_assign_not_eligible,
     });
     state.currentRoom = await searchRoomSummary(result.new_room_no);
@@ -1259,6 +1282,7 @@ function resetFoForm(options = {}) {
 
   els.foCardCode.value = "";
   els.foRoomNo.value = "";
+  if (els.foGuestName) els.foGuestName.value = "";
   state.currentCard = null;
   if (!preserveRoomState) state.currentRoom = null;
   renderCardStatus();
@@ -1391,6 +1415,7 @@ async function handleManualRoomValidate() {
       deviceName: state.operator.deviceName,
       cardCodeInput: null,
       roomNoInput: els.scanManualRoomNo?.value || "",
+      manualGuestNameInput: els.scanManualGuestName?.value || "",
       checkinMode: state.config.checkin_mode || "auto",
       actualPaxInput: els.scanActualPax.value || null,
     });
@@ -1503,6 +1528,7 @@ function prepareNextScan({ keepMessage = true } = {}) {
   clearTimeout(state.scanAutoTimer);
   els.scanCardCode.value = "";
   if (els.scanManualRoomNo) els.scanManualRoomNo.value = "";
+  if (els.scanManualGuestName) els.scanManualGuestName.value = "";
   els.scanActualPax.value = "";
   els.scanConfirmBtn.disabled = true;
   state.restaurantInputMode = "card";
@@ -2051,14 +2077,17 @@ function csvCell(value) {
   return `"${escaped}"`;
 }
 
-async function assignCardTx({ db, userId, cardCodeInput, roomInput, allowAssignNotEligible = true }) {
+async function assignCardTx({ db, userId, cardCodeInput, roomInput, manualGuestNameInput = "", allowAssignNotEligible = true }) {
   const cardCode = normalizeCardCode(cardCodeInput);
   const roomNo = normalizeRoomNo(roomInput);
+  const manualGuestName = normalizeGuestName(manualGuestNameInput);
 
   if (!cardCode) throw makeAppError("CARD_REQUIRED", "Please scan or enter card code");
   if (!roomNo) throw makeAppError("ROOM_REQUIRED", "Please enter room number");
 
   const activeCards = await getActiveCardsForRoom(db, roomNo);
+  const preConfig = await getAppConfig(db);
+  await getGuestDailyLookup(db, preConfig.current_business_date, roomNo, { repair: true });
 
   return runTransaction(db, async (tx) => {
     const configRef = doc(db, "settings", "app_config");
@@ -2093,12 +2122,13 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, allowAssignN
     }
 
     const isFoPreAssigned = !guest;
+    const savedGuestName = guest?.guest_name || manualGuestName || "";
     const bindingData = {
       card_code: cardCode,
       active: true,
       room_no: roomNo,
       business_date: businessDate,
-      guest_name: guest?.guest_name || "",
+      guest_name: savedGuestName,
       pax: Number(guest?.pax || 0),
       package: guest?.package || "",
       breakfast_package: guest?.breakfast_package || guest?.package || "",
@@ -2123,7 +2153,7 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, allowAssignN
       old_active: false,
       new_active: true,
       business_date: businessDate,
-      guest_name: guest?.guest_name || "",
+      guest_name: savedGuestName,
       done_at: serverTimestamp(),
       done_by: userId,
       remarks: `${activeCount === 0 ? "assigned as card 1" : "assigned as card 2"}${isFoPreAssigned ? " · FO Pre-Assigned" : ""}`,
@@ -2140,14 +2170,17 @@ async function assignCardTx({ db, userId, cardCodeInput, roomInput, allowAssignN
   });
 }
 
-async function reassignCardTx({ db, userId, cardCodeInput, roomInput, allowAssignNotEligible = true }) {
+async function reassignCardTx({ db, userId, cardCodeInput, roomInput, manualGuestNameInput = "", allowAssignNotEligible = true }) {
   const cardCode = normalizeCardCode(cardCodeInput);
   const targetRoomNo = normalizeRoomNo(roomInput);
+  const manualGuestName = normalizeGuestName(manualGuestNameInput);
 
   if (!cardCode) throw makeAppError("CARD_REQUIRED", "Please scan or enter card code");
   if (!targetRoomNo) throw makeAppError("ROOM_REQUIRED", "Please enter room number");
 
   const targetActiveCards = (await getActiveCardsForRoom(db, targetRoomNo)).filter((row) => row.id !== cardCode);
+  const preConfig = await getAppConfig(db);
+  await getGuestDailyLookup(db, preConfig.current_business_date, targetRoomNo, { repair: true });
 
   return runTransaction(db, async (tx) => {
     const configRef = doc(db, "settings", "app_config");
@@ -2191,12 +2224,13 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, allowAssig
     }
 
     const isFoPreAssigned = !guest;
+    const savedGuestName = guest?.guest_name || manualGuestName || "";
     tx.set(cardRef, {
       card_code: cardCode,
       active: true,
       room_no: targetRoomNo,
       business_date: businessDate,
-      guest_name: guest?.guest_name || "",
+      guest_name: savedGuestName,
       pax: Number(guest?.pax || 0),
       package: guest?.package || "",
       breakfast_package: guest?.breakfast_package || guest?.package || "",
@@ -2220,7 +2254,7 @@ async function reassignCardTx({ db, userId, cardCodeInput, roomInput, allowAssig
       old_active: oldActive,
       new_active: true,
       business_date: businessDate,
-      guest_name: guest?.guest_name || "",
+      guest_name: savedGuestName,
       done_at: serverTimestamp(),
       done_by: userId,
       remarks: `${targetActiveCards.length === 0 ? "reassigned as card 1" : "reassigned as card 2"}${isFoPreAssigned ? " · FO Pre-Assigned" : ""}`,
@@ -2295,9 +2329,10 @@ async function clearCardTx({ db, userId, cardCodeInput }) {
   });
 }
 
-async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput = null, actualPaxInput = null }) {
+async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput = null, manualGuestNameInput = "", actualPaxInput = null }) {
   const cardCode = normalizeCardCode(cardCodeInput);
   const manualRoomNo = normalizeRoomNo(roomNoInput);
+  const manualGuestName = normalizeGuestName(manualGuestNameInput);
   const isManualRoom = !!manualRoomNo;
   if (!cardCode && !manualRoomNo) {
     throw makeAppError("CARD_OR_ROOM_REQUIRED", "Please scan card or enter room number");
@@ -2334,20 +2369,25 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput
       });
     }
 
-    roomNo = binding.room_no;
+    roomNo = normalizeRoomNo(binding.room_no);
+  } else {
+    binding = await getManualRoomBindingFallback(db, roomNo);
   }
 
-  const guestSnap = await getDoc(doc(db, "guest_daily", buildDateRoomId(businessDate, roomNo)));
-  if (!guestSnap.exists()) {
+  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: true });
+  const guestSnap = guestLookup?.snap || null;
+  if (!guestSnap?.exists()) {
+    const fallbackPax = Number(binding?.pax || 0);
+    const fallbackActualPax = String(actualPaxInput || "").trim() ? parseActualPax(actualPaxInput, fallbackPax) : 0;
     return {
       ok: false,
       result: "room_not_found",
       business_date: businessDate,
       card_code: isManualRoom ? "" : cardCode,
       room_no: roomNo,
-      guest_name: binding?.guest_name || "",
-      entitled_pax: Number(binding?.pax || 0),
-      actual_pax: 0,
+      guest_name: manualGuestName || binding?.guest_name || "",
+      entitled_pax: fallbackPax,
+      actual_pax: fallbackActualPax,
       package: binding?.package || "",
       breakfast_package: binding?.breakfast_package || binding?.package || "",
       special_package: binding?.special_package || "",
@@ -2430,6 +2470,13 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput
 }
 
 async function confirmRoPaidCheckinTx({ db, logId, userId, deviceName, sourceResult, amount, actualPaxInput = null }) {
+  const preConfig = await getAppConfig(db);
+  const preBusinessDate = sourceResult?.business_date || preConfig.current_business_date;
+  const preRoomNo = normalizeRoomNo(sourceResult?.room_no);
+  if (preBusinessDate && preRoomNo) {
+    await getGuestDailyLookup(db, preBusinessDate, preRoomNo, { repair: true });
+  }
+
   return runTransaction(db, async (tx) => {
     const configRef = doc(db, "settings", "app_config");
     const configSnap = await tx.get(configRef);
@@ -2599,6 +2646,8 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
     throw makeAppError("CARD_OR_ROOM_REQUIRED", "Please scan card or enter room number");
   }
 
+  await ensureCanonicalGuestDailyBeforeCheckin(db, cardCode, manualRoomNo);
+
   return runTransaction(db, async (tx) => {
     const configRef = doc(db, "settings", "app_config");
     const configSnap = await tx.get(configRef);
@@ -2617,7 +2666,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
       if (!binding.active || !binding.room_no) {
         throw makeAppError("UNASSIGNED_CARD", "This card is not assigned to any room");
       }
-      roomNo = binding.room_no;
+      roomNo = normalizeRoomNo(binding.room_no);
     }
 
     const guestRef = doc(db, "guest_daily", buildDateRoomId(businessDate, roomNo));
@@ -2703,12 +2752,12 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
   });
 }
 
-async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, roomNoInput = null, checkinMode, actualPaxInput = null }) {
+async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, roomNoInput = null, manualGuestNameInput = "", checkinMode, actualPaxInput = null }) {
   const mode = checkinMode || "auto";
 
   // Manual mode still validates first because the user must press Confirm afterward.
   if (mode === "manual") {
-    return validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput });
+    return validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput, manualGuestNameInput, actualPaxInput });
   }
 
   // Auto mode: write the check-in directly in one transaction.
@@ -2731,12 +2780,12 @@ async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, roo
       throw error;
     }
 
-    return validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput });
+    return validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput, manualGuestNameInput, actualPaxInput });
   }
 }
 
-async function validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput = null, actualPaxInput = null }) {
-  const validation = await validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput });
+async function validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput = null, manualGuestNameInput = "", actualPaxInput = null }) {
+  const validation = await validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput, manualGuestNameInput, actualPaxInput });
 
   if (!validation.ok) {
     const shouldSkipLog = !normalizeRoomNo(validation.room_no);
@@ -2941,12 +2990,101 @@ function parseActualPax(raw, fallback) {
   return Math.floor(num);
 }
 
+async function getGuestDailyLookup(db, businessDate, roomNo, options = {}) {
+  const normalizedRoomNo = normalizeRoomNo(roomNo);
+  if (!db || !businessDate || !normalizedRoomNo) return { exists: false, snap: null, data: null, ref: null };
+
+  const canonicalId = buildDateRoomId(businessDate, normalizedRoomNo);
+  const canonicalRef = doc(db, "guest_daily", canonicalId);
+  const canonicalSnap = await getDoc(canonicalRef);
+  if (canonicalSnap.exists()) {
+    return { exists: true, snap: canonicalSnap, data: canonicalSnap.data(), ref: canonicalRef, repaired: false };
+  }
+
+  const byDateSnap = await getDocs(query(
+    collection(db, "guest_daily"),
+    where("business_date", "==", businessDate),
+    limit(5000)
+  ));
+
+  const matchedDoc = byDateSnap.docs.find((item) => {
+    const data = item.data() || {};
+    return normalizeRoomNo(data.room_no || "") === normalizedRoomNo;
+  });
+
+  if (!matchedDoc) {
+    return { exists: false, snap: null, data: null, ref: canonicalRef, repaired: false };
+  }
+
+  const matchedData = matchedDoc.data() || {};
+
+  if (options.repair !== false) {
+    await setDoc(canonicalRef, {
+      ...matchedData,
+      doc_id: canonicalId,
+      business_date: businessDate,
+      room_no: normalizedRoomNo,
+      repaired_from_doc_id: matchedDoc.id,
+      repaired_at: serverTimestamp(),
+    }, { merge: true });
+
+    const repairedSnap = await getDoc(canonicalRef);
+    return { exists: repairedSnap.exists(), snap: repairedSnap, data: repairedSnap.data(), ref: canonicalRef, repaired: true };
+  }
+
+  return { exists: true, snap: matchedDoc, data: matchedData, ref: matchedDoc.ref, repaired: false };
+}
+
+async function ensureCanonicalGuestDailyBeforeCheckin(db, cardCode, manualRoomNo) {
+  const config = await getAppConfig(db);
+  const businessDate = config.current_business_date;
+  let roomNo = normalizeRoomNo(manualRoomNo);
+
+  if (!roomNo && cardCode) {
+    const cardSnap = await getDoc(doc(db, "card_bindings", cardCode));
+    if (cardSnap.exists()) {
+      const binding = cardSnap.data() || {};
+      if (binding.active && binding.room_no) {
+        roomNo = normalizeRoomNo(binding.room_no);
+      }
+    }
+  }
+
+  if (businessDate && roomNo) {
+    await getGuestDailyLookup(db, businessDate, roomNo, { repair: true });
+  }
+}
+
 function buildDateRoomId(businessDate, roomNo) {
-  return `${businessDate}_${roomNo}`;
+  return `${businessDate}_${normalizeRoomNo(roomNo)}`;
 }
 
 function normalizeCardCode(raw) {
   return String(raw || "").trim().toUpperCase();
+}
+
+
+function normalizeGuestName(raw) {
+  return String(raw || "").trim().replace(/\s+/g, " ");
+}
+
+function pickBestRoomBinding(cards = []) {
+  return cards.find((row) => String(row?.guest_name || "").trim())
+    || cards.find((row) => Number(row?.pax || 0) > 0 || row?.package || row?.breakfast_package)
+    || cards[0]
+    || null;
+}
+
+async function getManualRoomBindingFallback(db, roomNo) {
+  const normalizedRoomNo = normalizeRoomNo(roomNo);
+  if (!db || !normalizedRoomNo) return null;
+  try {
+    const activeCards = await getActiveCardsForRoom(db, normalizedRoomNo);
+    return pickBestRoomBinding(activeCards);
+  } catch (error) {
+    console.warn("Manual room binding fallback failed", error);
+    return null;
+  }
 }
 
 function normalizeRoomNo(raw) {

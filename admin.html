@@ -142,6 +142,11 @@
               <div class="button-stack">
                 <button id="foSearchRoomBtn">Search Room</button>
               </div>
+              <label>
+                <span>Guest Name (optional)</span>
+                <input type="text" id="foGuestName" placeholder="Guest name" />
+              </label>
+              <div class="button-stack"></div>
             </div>
 
             <div class="button-row">
@@ -210,6 +215,10 @@
               <label class="full">
                 <span>Manual Room No (if guest forgot card)</span>
                 <input type="text" id="scanManualRoomNo" placeholder="Type room number and press Enter" />
+              </label>
+              <label class="full">
+                <span>Guest Name (optional for room not found)</span>
+                <input type="text" id="scanManualGuestName" placeholder="Type guest name if room is not in Daily Guest Upload" />
               </label>
               <label>
                 <span>Actual Pax (auto from Daily Guest Upload)</span>
@@ -465,7 +474,7 @@
     </main>
   </div>
 
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=20260524-room-lookup-v2"></script>
 
 
   <div class="modal-backdrop" id="roPaymentModal" hidden>
