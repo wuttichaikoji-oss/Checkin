@@ -2470,28 +2470,18 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput
 }
 
 async function confirmRoPaidCheckinTx({ db, logId, userId, deviceName, sourceResult, amount, actualPaxInput = null }) {
-  const preConfig = await getAppConfig(db);
-  const preBusinessDate = sourceResult?.business_date || preConfig.current_business_date;
-  const preRoomNo = normalizeRoomNo(sourceResult?.room_no);
-  if (preBusinessDate && preRoomNo) {
-    await getGuestDailyLookup(db, preBusinessDate, preRoomNo, { repair: true });
-  }
+  const config = await getAppConfig(db);
+  const businessDate = sourceResult?.business_date || config.current_business_date;
+  const roomNo = normalizeRoomNo(sourceResult?.room_no);
+  if (!roomNo) throw makeAppError("ROOM_REQUIRED", "Room number is required");
+
+  // Robust Daily lookup: the Daily table is queried by business_date, but older imports may
+  // have non-canonical document IDs. Do not depend on guest_daily/{date_room} here.
+  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: false });
+  if (!guestLookup?.exists) throw makeAppError("ROOM_NOT_FOUND", "Room not found in today's guest list");
+  const guest = guestLookup.data || guestLookup.snap?.data() || {};
 
   return runTransaction(db, async (tx) => {
-    const configRef = doc(db, "settings", "app_config");
-    const configSnap = await tx.get(configRef);
-    if (!configSnap.exists()) throw makeAppError("CONFIG_NOT_FOUND");
-
-    const config = { ...DEFAULT_CONFIG, ...configSnap.data() };
-    const businessDate = sourceResult?.business_date || config.current_business_date;
-    const roomNo = normalizeRoomNo(sourceResult?.room_no);
-    if (!roomNo) throw makeAppError("ROOM_REQUIRED", "Room number is required");
-
-    const guestRef = doc(db, "guest_daily", buildDateRoomId(businessDate, roomNo));
-    const guestSnap = await tx.get(guestRef);
-    if (!guestSnap.exists()) throw makeAppError("ROOM_NOT_FOUND", "Room not found in today's guest list");
-    const guest = guestSnap.data();
-
     const roomCheckinRef = doc(db, "room_checkin_daily", buildDateRoomId(businessDate, roomNo));
     const roomCheckinSnap = await tx.get(roomCheckinRef);
     if (roomCheckinSnap.exists()) throw makeAppError("ALREADY_CHECKED_IN", "Room already checked in today");
@@ -2646,38 +2636,54 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
     throw makeAppError("CARD_OR_ROOM_REQUIRED", "Please scan card or enter room number");
   }
 
-  await ensureCanonicalGuestDailyBeforeCheckin(db, cardCode, manualRoomNo);
+  const config = await getAppConfig(db);
+  const businessDate = config.current_business_date;
+
+  let roomNo = manualRoomNo;
+  let preBinding = null;
+  if (!isManualRoom) {
+    const cardSnap = await getDoc(doc(db, "card_bindings", cardCode));
+    if (!cardSnap.exists()) throw makeAppError("INVALID_CARD", "Card not found in system");
+
+    preBinding = cardSnap.data() || {};
+    if (!preBinding.active || !preBinding.room_no) {
+      throw makeAppError("UNASSIGNED_CARD", "This card is not assigned to any room");
+    }
+    roomNo = normalizeRoomNo(preBinding.room_no);
+  }
+
+  // Robust Daily lookup: the screen that shows Daily uses a query by business_date.
+  // The check-in must use the same logic instead of only reading guest_daily/{date_room},
+  // because older/partial imports can show B217 in Daily but store it under a different doc ID.
+  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: false });
+  if (!guestLookup?.exists) {
+    throw makeAppError("ROOM_NOT_FOUND", "Room not found in today's guest list");
+  }
+  const guest = guestLookup.data || guestLookup.snap?.data() || {};
+
+  if (!guest.breakfast_eligible) {
+    throw makeAppError(
+      "NOT_ELIGIBLE",
+      normalizePackage(guest.breakfast_package || guest.package || "") === "RO"
+        ? "Room is RO. Payment required"
+        : "Room is not eligible for breakfast"
+    );
+  }
 
   return runTransaction(db, async (tx) => {
-    const configRef = doc(db, "settings", "app_config");
-    const configSnap = await tx.get(configRef);
-    if (!configSnap.exists()) throw makeAppError("CONFIG_NOT_FOUND");
-
-    const config = configSnap.data();
-    const businessDate = config.current_business_date;
-
-    let roomNo = manualRoomNo;
     if (!isManualRoom) {
       const cardRef = doc(db, "card_bindings", cardCode);
       const cardSnap = await tx.get(cardRef);
       if (!cardSnap.exists()) throw makeAppError("INVALID_CARD", "Card not found in system");
 
-      const binding = cardSnap.data();
+      const binding = cardSnap.data() || {};
       if (!binding.active || !binding.room_no) {
         throw makeAppError("UNASSIGNED_CARD", "This card is not assigned to any room");
       }
-      roomNo = normalizeRoomNo(binding.room_no);
-    }
-
-    const guestRef = doc(db, "guest_daily", buildDateRoomId(businessDate, roomNo));
-    const guestSnap = await tx.get(guestRef);
-    if (!guestSnap.exists()) {
-      throw makeAppError("ROOM_NOT_FOUND", "Room not found in today's guest list");
-    }
-
-    const guest = guestSnap.data();
-    if (!guest.breakfast_eligible) {
-      throw makeAppError("NOT_ELIGIBLE", normalizePackage(guest.breakfast_package || guest.package || "") === "RO" ? "Room is RO. Payment required" : "Room is not eligible for breakfast");
+      const txRoomNo = normalizeRoomNo(binding.room_no);
+      if (txRoomNo !== roomNo) {
+        throw makeAppError("CARD_ROOM_CHANGED", "Card room changed. Please scan again.");
+      }
     }
 
     const roomCheckinRef = doc(db, "room_checkin_daily", buildDateRoomId(businessDate, roomNo));
@@ -2688,7 +2694,6 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
 
     const entitledPax = Number(guest.pax || 0);
     const actualPax = parseActualPax(actualPaxInput, entitledPax);
-
     const logRef = doc(collection(db, "breakfast_logs"));
 
     tx.set(roomCheckinRef, {
@@ -2698,7 +2703,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
       checked_in: true,
       first_checkin_at: serverTimestamp(),
       first_card_code: isManualRoom ? "" : cardCode,
-      guest_name: guest.guest_name || "",
+      guest_name: guest.guest_name || preBinding?.guest_name || "",
       entitled_pax: entitledPax,
       actual_pax: actualPax,
       package: guest.package || "",
@@ -2716,7 +2721,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
       client_scan_time: new Date().toISOString(),
       card_code: isManualRoom ? "" : cardCode,
       room_no: roomNo,
-      guest_name: guest.guest_name || "",
+      guest_name: guest.guest_name || preBinding?.guest_name || "",
       entitled_pax: entitledPax,
       actual_pax: actualPax,
       package: guest.package || "",
@@ -2736,7 +2741,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
       business_date: businessDate,
       card_code: isManualRoom ? "" : cardCode,
       room_no: roomNo,
-      guest_name: guest.guest_name || "",
+      guest_name: guest.guest_name || preBinding?.guest_name || "",
       entitled_pax: entitledPax,
       actual_pax: actualPax,
       package: guest.package || "",
@@ -2774,6 +2779,7 @@ async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, roo
       "NOT_ELIGIBLE",
       "ALREADY_CHECKED_IN",
       "CARD_OR_ROOM_REQUIRED",
+      "CARD_ROOM_CHANGED",
     ]);
 
     if (!expectedCodes.has(error.code)) {
