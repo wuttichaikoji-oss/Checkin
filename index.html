@@ -425,6 +425,40 @@
           </div>
         </div>
 
+
+        <div class="card maintenance-card">
+          <div class="card-title-row">
+            <div>
+              <h2>Firestore Cleanup & Archive</h2>
+              <p class="helper">ล้างข้อมูลเก่าที่ไม่จำเป็นออกจาก collection หลัก เพื่อลดการโหลดหน้าใช้งานประจำวัน โดยไม่แตะ active card bindings</p>
+            </div>
+            <div class="inline-chip">Manual cleanup</div>
+          </div>
+          <div class="form-grid">
+            <label>
+              <span>Keep Daily Guest Data</span>
+              <input type="number" id="cleanupDailyDays" min="1" max="3650" step="1" value="14" />
+            </label>
+            <label>
+              <span>Keep Logs / Check-in Data</span>
+              <input type="number" id="cleanupLogDays" min="1" max="3650" step="1" value="90" />
+            </label>
+            <label class="checkbox-row full">
+              <input type="checkbox" id="cleanupArchiveLogs" checked />
+              <span>Archive breakfast logs before deleting from live collection</span>
+            </label>
+          </div>
+          <div class="button-row">
+            <button id="cleanupPreviewBtn" type="button">Preview Old Data</button>
+            <button id="cleanupRunBtn" class="primary" type="button">Run Cleanup + Archive</button>
+            <button id="cleanupDailyOnlyBtn" class="danger" type="button">Delete Old Daily Only</button>
+          </div>
+          <p class="helper">
+            Default: Daily เก็บ 14 วัน, Logs เก็บ 90 วัน. ข้อมูลเก่าของ breakfast_logs จะถูกคัดลอกไปที่ <code>breakfast_logs_archive</code> ก่อนลบออกจาก <code>breakfast_logs</code>.
+          </p>
+          <div class="message" id="cleanupMessage"></div>
+        </div>
+
         <div class="card">
           <h2>Deployment Notes</h2>
           <ul class="notes-list">
@@ -439,6 +473,6 @@
   </div>
 
   <script>window.APP_PAGE_MODE = "fo_assign";</script>
-  <script type="module" src="app.js?v=20260524-scan-manual-fix"></script>
+  <script type="module" src="app.js?v=20260525-cleanup-archive-v1"></script>
 </body>
 </html>

@@ -29,6 +29,13 @@ const PAGE_MODE = window.APP_PAGE_MODE || "full";
 const SCANNER_AUTO_SUBMIT_DELAY_MS = 650;
 const NEXT_SCAN_READY_DELAY_MS = 120;
 
+// Performance tuning: do not keep every Firestore listener open on every page.
+// The scan/check-in flow only needs one-room lookups and the small live log list.
+const DAILY_TABLE_LIMIT = 800;
+const LIVE_LOG_LIMIT = 40;
+const FO_ASSIGN_LOG_LIMIT = 60;
+const HISTORY_LOG_LIMIT = 300;
+
 const els = {
   firebaseStatus: $("firebaseStatus"),
   authStatus: $("authStatus"),
@@ -105,6 +112,14 @@ const els = {
   deleteSelectedDateLogsBtn: $("deleteSelectedDateLogsBtn"),
   logsBody: $("logsBody"),
 
+  cleanupDailyDays: $("cleanupDailyDays"),
+  cleanupLogDays: $("cleanupLogDays"),
+  cleanupArchiveLogs: $("cleanupArchiveLogs"),
+  cleanupPreviewBtn: $("cleanupPreviewBtn"),
+  cleanupRunBtn: $("cleanupRunBtn"),
+  cleanupDailyOnlyBtn: $("cleanupDailyOnlyBtn"),
+  cleanupMessage: $("cleanupMessage"),
+
   settingsBusinessDate: $("settingsBusinessDate"),
   settingsCheckinMode: $("settingsCheckinMode"),
   settingsMaxCards: $("settingsMaxCards"),
@@ -174,6 +189,7 @@ const state = {
   scanAutoTimer: null,
   pendingRoPaymentResult: null,
   refreshLogsTimer: null,
+  logsLoadedOnce: false,
   guestDailyLookupCache: new Map(),
 };
 
@@ -202,6 +218,78 @@ function init() {
     console.error(error);
     els.firebaseStatus.textContent = "Firebase: init failed";
     setMessage(els.settingsMessage, error.message || "Firebase init failed", true);
+  }
+}
+
+function getActiveTabId() {
+  const activeButton = document.querySelector(".tab.active");
+  if (activeButton?.dataset?.tab) return activeButton.dataset.tab;
+  const activePanel = document.querySelector(".tab-panel.active");
+  return activePanel?.id || "uploadTab";
+}
+
+function stopGuestDailyRealtime({ clearRows = false } = {}) {
+  if (state.guestDailyUnsub) {
+    state.guestDailyUnsub();
+    state.guestDailyUnsub = null;
+  }
+  if (clearRows) {
+    state.importedGuestRows = [];
+    renderImportedGuestData();
+  }
+  if (els.importedDataStatus) {
+    els.importedDataStatus.textContent = "Daily data: paused";
+  }
+}
+
+function stopRestaurantLiveLogs() {
+  if (state.liveLogUnsub) {
+    state.liveLogUnsub();
+    state.liveLogUnsub = null;
+  }
+  if (els.restaurantLiveStatus) {
+    els.restaurantLiveStatus.textContent = "Realtime: paused";
+  }
+}
+
+function stopFoAssignLogs() {
+  if (state.foAssignLogUnsub) {
+    state.foAssignLogUnsub();
+    state.foAssignLogUnsub = null;
+  }
+  if (els.foAssignLogStatus) {
+    els.foAssignLogStatus.textContent = "Realtime: paused";
+  }
+}
+
+function activateDataForCurrentView(tabId = getActiveTabId()) {
+  if (!state.db) return;
+
+  const activeTab = tabId || getActiveTabId();
+  const isFoOnlyPage = PAGE_MODE === "fo_assign";
+
+  if (isFoOnlyPage || activeTab === "foTab") {
+    startFoAssignLogs();
+  } else {
+    stopFoAssignLogs();
+  }
+
+  if (!isFoOnlyPage && activeTab === "restaurantTab") {
+    startRestaurantLiveLogs();
+  } else {
+    stopRestaurantLiveLogs();
+  }
+
+  if (!isFoOnlyPage && activeTab === "uploadTab") {
+    startGuestDailyRealtime();
+  } else {
+    stopGuestDailyRealtime();
+  }
+
+  if (!isFoOnlyPage && activeTab === "logsTab") {
+    refreshLogs();
+  } else if (els.logsBody && !state.logsLoadedOnce) {
+    els.logsBody.innerHTML = '<tr><td colspan="11" class="empty">Open Logs tab or press Refresh to load history.</td></tr>';
   }
 }
 
@@ -244,7 +332,8 @@ function bindTabs() {
       document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
       btn.classList.add("active");
       $(btn.dataset.tab).classList.add("active");
-      document.body.classList.remove("admin-convert-active");
+      document.body.classList.toggle("admin-convert-active", btn.dataset.tab === "convertTab");
+      activateDataForCurrentView(btn.dataset.tab);
       if (btn.dataset.tab === "restaurantTab") {
         focusScanInput();
       }
@@ -366,6 +455,9 @@ function bindEvents() {
   els.refreshLogsBtn.addEventListener("click", refreshLogs);
   els.exportLogsBtn.addEventListener("click", exportLogsCsv);
   els.deleteSelectedDateLogsBtn.addEventListener("click", handleDeleteSelectedDateLogs);
+  els.cleanupPreviewBtn?.addEventListener("click", handleCleanupPreview);
+  els.cleanupRunBtn?.addEventListener("click", () => handleRunCleanup({ dailyOnly: false }));
+  els.cleanupDailyOnlyBtn?.addEventListener("click", () => handleRunCleanup({ dailyOnly: true }));
   els.logsDate.addEventListener("change", refreshLogs);
   els.logsResultFilter.addEventListener("change", refreshLogs);
   els.logsRoomFilter.addEventListener("keydown", (e) => {
@@ -408,10 +500,7 @@ async function initAuth() {
       await loadSettingsFromFirestore();
       await runGuestDailyCleanupIfNeeded({ forceRolloverToToday: true });
       scheduleGuestDailyMidnightCleanup();
-      await refreshLogs();
-      startRestaurantLiveLogs();
-      startGuestDailyRealtime();
-      startFoAssignLogs();
+      activateDataForCurrentView();
       focusScanInput();
     });
   } catch (error) {
@@ -457,9 +546,7 @@ async function loadSettingsFromFirestore() {
     state.config = loaded;
     applyConfigToForm();
     syncUploadDateFromConfig();
-    startRestaurantLiveLogs();
-    startGuestDailyRealtime();
-    startFoAssignLogs();
+    activateDataForCurrentView();
     setMessage(els.settingsMessage, "Settings loaded. Auto check-in is active.");
   } catch (error) {
     console.error(error);
@@ -483,9 +570,7 @@ async function saveSettingsToFirestore() {
     await setDoc(doc(state.db, "settings", "app_config"), payload, { merge: true });
     state.config = { ...state.config, ...payload };
     applyConfigToForm();
-    startRestaurantLiveLogs();
-    startGuestDailyRealtime();
-    startFoAssignLogs();
+    activateDataForCurrentView();
     scheduleGuestDailyMidnightCleanup();
     clearGuestDailyLookupCache();
     setMessage(els.settingsMessage, "Settings saved.");
@@ -522,7 +607,10 @@ function syncUploadDateFromConfig() {
 }
 
 function handleUploadDateChange() {
-  startGuestDailyRealtime();
+  clearGuestDailyLookupCache(els.uploadBusinessDate.value || "");
+  if (getActiveTabId() === "uploadTab" && PAGE_MODE !== "fo_assign") {
+    startGuestDailyRealtime();
+  }
 }
 
 function loadOperator() {
@@ -558,6 +646,7 @@ function refreshOperatorChip() {
 }
 
 function setMessage(el, text, isError = false) {
+  if (!el) return;
   el.textContent = text || "";
   el.style.color = isError ? "var(--danger)" : "var(--accent-2)";
 }
@@ -634,8 +723,7 @@ async function importUploadRows() {
     state.config.current_business_date = businessDate;
     applyConfigToForm();
     els.uploadBusinessDate.value = businessDate;
-    startRestaurantLiveLogs();
-    startGuestDailyRealtime();
+    activateDataForCurrentView();
     const syncText = syncedCards > 0
       ? ` · Auto-updated ${syncedCards} FO Pre-Assigned card(s)`
       : "";
@@ -658,8 +746,8 @@ async function handleDeleteSelectedDateGuestData() {
     const deleted = await deleteGuestDailyForDate(businessDate);
     state.uploadRows = [];
     renderUploadPreview();
-    startGuestDailyRealtime();
     clearGuestDailyLookupCache(businessDate);
+    activateDataForCurrentView();
     setMessage(els.uploadMessage, `Deleted ${deleted} guest room row(s) for ${businessDate}.`);
   } catch (error) {
     console.error(error);
@@ -842,8 +930,8 @@ async function runGuestDailyCleanupIfNeeded({ forceRolloverToToday = false } = {
   }
 
   if (deleted > 0) {
-    startGuestDailyRealtime();
     clearGuestDailyLookupCache();
+    activateDataForCurrentView();
     setMessage(els.uploadMessage, `Auto-cleaned ${deleted} guest room row(s) from previous day(s). Ready for ${today}.`);
     setMessage(els.settingsMessage, `Auto-cleaned previous guest_daily data. Current business date: ${today}.`);
   }
@@ -888,7 +976,7 @@ function scheduleGuestDailyMidnightCleanup() {
     state.midnightCleanupTimer = setTimeout(async () => {
       try {
         await runGuestDailyCleanupIfNeeded({ forceRolloverToToday: true });
-        await refreshLogs();
+        activateDataForCurrentView();
       } catch (error) {
         console.error("Midnight guest_daily cleanup failed", error);
       } finally {
@@ -965,7 +1053,7 @@ function renderUploadPreview() {
 
 
 function startGuestDailyRealtime() {
-  if (!state.db) return;
+  if (!state.db || PAGE_MODE === "fo_assign") return;
   if (state.guestDailyUnsub) {
     state.guestDailyUnsub();
     state.guestDailyUnsub = null;
@@ -979,13 +1067,13 @@ function startGuestDailyRealtime() {
   }
 
   if (els.importedDataStatus) {
-    els.importedDataStatus.textContent = `Realtime: ${businessDate}`;
+    els.importedDataStatus.textContent = `Loading Daily: ${businessDate}`;
   }
 
   const q = query(
     collection(state.db, "guest_daily"),
     where("business_date", "==", businessDate),
-    limit(2000)
+    limit(DAILY_TABLE_LIMIT)
   );
 
   state.guestDailyUnsub = onSnapshot(q, (snap) => {
@@ -994,7 +1082,8 @@ function startGuestDailyRealtime() {
       .sort((a, b) => normalizeRoomNo(a.room_no).localeCompare(normalizeRoomNo(b.room_no)));
     renderImportedGuestData();
     if (els.importedDataStatus) {
-      els.importedDataStatus.textContent = `Realtime: ${businessDate} · ${state.importedGuestRows.length} room(s)`;
+      const cappedText = snap.size >= DAILY_TABLE_LIMIT ? ` · showing first ${DAILY_TABLE_LIMIT}` : "";
+      els.importedDataStatus.textContent = `Daily: ${businessDate} · ${state.importedGuestRows.length} room(s)${cappedText}`;
     }
   }, (error) => {
     console.error(error);
@@ -1025,7 +1114,7 @@ function renderImportedGuestData(errorText = "") {
   }
 
   els.importedDataBody.innerHTML = state.importedGuestRows
-    .slice(0, 1000)
+    .slice(0, DAILY_TABLE_LIMIT)
     .map((row, idx) => `
       <tr>
         <td>${idx + 1}</td>
@@ -1765,7 +1854,7 @@ function startFoAssignLogs() {
   const q = query(
     collection(state.db, "card_history"),
     where("business_date", "==", businessDate),
-    limit(120)
+    limit(FO_ASSIGN_LOG_LIMIT)
   );
 
   state.foAssignLogUnsub = onSnapshot(q, (snap) => {
@@ -1831,7 +1920,7 @@ function renderFoAssignLog() {
 }
 
 function startRestaurantLiveLogs() {
-  if (!state.db) return;
+  if (!state.db || !els.restaurantLiveLogsBody || !els.restaurantLiveStatus) return;
   if (state.liveLogUnsub) {
     state.liveLogUnsub();
     state.liveLogUnsub = null;
@@ -1843,7 +1932,7 @@ function startRestaurantLiveLogs() {
   const q = query(
     collection(state.db, "breakfast_logs"),
     where("business_date", "==", businessDate),
-    limit(100)
+    limit(LIVE_LOG_LIMIT)
   );
 
   state.liveLogUnsub = onSnapshot(q, (snap) => {
@@ -1891,6 +1980,7 @@ function handleLogsTableClick(event) {
 }
 
 function renderRestaurantLiveLogs() {
+  if (!els.restaurantLiveLogsBody) return;
   if (!state.restaurantLiveRows.length) {
     state.selectedLiveLogId = "";
     els.restaurantLiveLogsBody.innerHTML = `<tr><td colspan="11" class="empty">No live logs for this business date</td></tr>`;
@@ -1923,12 +2013,12 @@ function renderRestaurantLiveLogs() {
 
 async function refreshLogs() {
   try {
-    if (!state.db) return;
+    if (!state.db || !els.logsBody) return;
     const businessDate = els.logsDate.value || state.config.current_business_date || todayInBangkok();
     const q = query(
       collection(state.db, "breakfast_logs"),
       where("business_date", "==", businessDate),
-      limit(500)
+      limit(HISTORY_LOG_LIMIT)
     );
     const snap = await getDocs(q);
     let rows = snap.docs
@@ -1946,6 +2036,7 @@ async function refreshLogs() {
     }
 
     state.logRows = rows;
+    state.logsLoadedOnce = true;
     renderLogsTable();
   } catch (error) {
     console.error(error);
@@ -1997,7 +2088,218 @@ This action cannot be undone.`);
   }
 }
 
+
+function setCleanupMessage(text, isError = false) {
+  setMessage(els.cleanupMessage || els.settingsMessage || els.uploadMessage, text, isError);
+}
+
+function clampRetentionDays(raw, fallback, min = 1, max = 3650) {
+  const value = Math.floor(Number(raw));
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
+function dateDaysAgoInBangkok(days) {
+  const today = todayInBangkok();
+  const [year, month, day] = today.split("-").map(Number);
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  dt.setUTCDate(dt.getUTCDate() - Number(days || 0));
+  return dt.toISOString().slice(0, 10);
+}
+
+function getCleanupSettings() {
+  const dailyDays = clampRetentionDays(els.cleanupDailyDays?.value, 14, 1, 3650);
+  const logDays = clampRetentionDays(els.cleanupLogDays?.value, 90, 1, 3650);
+  if (els.cleanupDailyDays) els.cleanupDailyDays.value = String(dailyDays);
+  if (els.cleanupLogDays) els.cleanupLogDays.value = String(logDays);
+  return {
+    dailyDays,
+    logDays,
+    archiveLogs: els.cleanupArchiveLogs?.checked !== false,
+    dailyCutoff: dateDaysAgoInBangkok(dailyDays),
+    logCutoff: dateDaysAgoInBangkok(logDays),
+  };
+}
+
+async function countOldDocs(collectionName, cutoffDate, cap = 401) {
+  const snap = await getDocs(query(
+    collection(state.db, collectionName),
+    where("business_date", "<", cutoffDate),
+    limit(cap)
+  ));
+  return {
+    count: snap.size,
+    capped: snap.size >= cap,
+    cap,
+  };
+}
+
+function formatCountEstimate(result) {
+  if (!result) return "0";
+  if (result.capped) return `${result.cap - 1}+`;
+  return String(result.count || 0);
+}
+
+async function handleCleanupPreview() {
+  try {
+    if (!state.db) throw new Error("Firebase is not ready.");
+    const settings = getCleanupSettings();
+    setCleanupMessage("Checking old Firestore records...");
+
+    const [daily, logs, roomCheckins] = await Promise.all([
+      countOldDocs("guest_daily", settings.dailyCutoff),
+      countOldDocs("breakfast_logs", settings.logCutoff),
+      countOldDocs("room_checkin_daily", settings.logCutoff),
+    ]);
+
+    setCleanupMessage(
+      `Preview only · Daily older than ${settings.dailyCutoff}: ${formatCountEstimate(daily)} row(s) · ` +
+      `Logs older than ${settings.logCutoff}: ${formatCountEstimate(logs)} row(s) · ` +
+      `Room check-in records older than ${settings.logCutoff}: ${formatCountEstimate(roomCheckins)} row(s).`
+    );
+  } catch (error) {
+    console.error(error);
+    setCleanupMessage(friendlyError(error), true);
+  }
+}
+
+async function handleRunCleanup({ dailyOnly = false } = {}) {
+  try {
+    if (!state.db) throw new Error("Firebase is not ready.");
+    const settings = getCleanupSettings();
+    const actionText = dailyOnly
+      ? `Delete guest_daily records older than ${settings.dailyCutoff}?`
+      : `Clean old data?\n\nDaily older than ${settings.dailyCutoff} will be deleted.\nBreakfast logs and room check-in records older than ${settings.logCutoff} will be ${settings.archiveLogs ? "archived then deleted" : "deleted"}.`;
+    const ok = window.confirm(`${actionText}\n\nThis cannot be undone from the live collections. Export reports first if needed.`);
+    if (!ok) return;
+
+    setCleanupMessage("Cleanup running... please keep this tab open.");
+
+    const deletedDaily = await deleteDocsBeforeBusinessDate("guest_daily", settings.dailyCutoff, { batchSize: 350 });
+    let archivedLogs = 0;
+    let deletedLogs = 0;
+    let deletedRoomCheckins = 0;
+
+    if (!dailyOnly) {
+      if (settings.archiveLogs) {
+        const logResult = await archiveAndDeleteBreakfastLogsBeforeDate(settings.logCutoff, { batchSize: 200 });
+        archivedLogs = logResult.archived;
+        deletedLogs = logResult.deleted;
+      } else {
+        deletedLogs = await deleteDocsBeforeBusinessDate("breakfast_logs", settings.logCutoff, { batchSize: 350 });
+      }
+      deletedRoomCheckins = await deleteDocsBeforeBusinessDate("room_checkin_daily", settings.logCutoff, { batchSize: 350 });
+    }
+
+    await addDoc(collection(state.db, "cleanup_archive_runs"), {
+      run_at: serverTimestamp(),
+      run_by: state.operator.userId,
+      device_name: state.operator.deviceName,
+      daily_retention_days: settings.dailyDays,
+      log_retention_days: settings.logDays,
+      daily_cutoff_date: settings.dailyCutoff,
+      log_cutoff_date: settings.logCutoff,
+      archive_logs: settings.archiveLogs && !dailyOnly,
+      daily_only: !!dailyOnly,
+      deleted_guest_daily: deletedDaily,
+      archived_breakfast_logs: archivedLogs,
+      deleted_breakfast_logs: deletedLogs,
+      deleted_room_checkin_daily: deletedRoomCheckins,
+    });
+
+    clearGuestDailyLookupCache();
+    activateDataForCurrentView();
+    if (getActiveTabId() === "logsTab") await refreshLogs();
+
+    setCleanupMessage(
+      `Cleanup complete · guest_daily deleted ${deletedDaily} · ` +
+      `breakfast_logs archived ${archivedLogs}, deleted ${deletedLogs} · ` +
+      `room_checkin_daily deleted ${deletedRoomCheckins}.`
+    );
+  } catch (error) {
+    console.error(error);
+    setCleanupMessage(friendlyError(error), true);
+  }
+}
+
+async function deleteDocsBeforeBusinessDate(collectionName, cutoffDate, { batchSize = 350 } = {}) {
+  let deleted = 0;
+  while (true) {
+    const snap = await getDocs(query(
+      collection(state.db, collectionName),
+      where("business_date", "<", cutoffDate),
+      limit(batchSize)
+    ));
+    if (snap.empty) break;
+
+    const batch = writeBatch(state.db);
+    snap.docs.forEach((d) => {
+      batch.delete(d.ref);
+      deleted += 1;
+    });
+    await batch.commit();
+
+    setCleanupMessage(`Cleaning ${collectionName}... deleted ${deleted} row(s).`);
+    if (snap.size < batchSize) break;
+    await pause(25);
+  }
+  return deleted;
+}
+
+async function archiveAndDeleteBreakfastLogsBeforeDate(cutoffDate, { batchSize = 200 } = {}) {
+  let archived = 0;
+  let deleted = 0;
+
+  while (true) {
+    const snap = await getDocs(query(
+      collection(state.db, "breakfast_logs"),
+      where("business_date", "<", cutoffDate),
+      limit(batchSize)
+    ));
+    if (snap.empty) break;
+
+    let batch = writeBatch(state.db);
+    let ops = 0;
+
+    for (const logDoc of snap.docs) {
+      const data = logDoc.data() || {};
+      const archiveDate = String(data.business_date || "unknown").replace(/[^0-9A-Za-z_-]/g, "_");
+      const archiveRef = doc(state.db, "breakfast_logs_archive", `${archiveDate}_${logDoc.id}`);
+      batch.set(archiveRef, {
+        ...data,
+        archived_at: serverTimestamp(),
+        archived_by: state.operator.userId,
+        archive_source_collection: "breakfast_logs",
+        archive_source_id: logDoc.id,
+        cleanup_cutoff_date: cutoffDate,
+      }, { merge: true });
+      batch.delete(logDoc.ref);
+      archived += 1;
+      deleted += 1;
+      ops += 2;
+
+      if (ops >= 400) {
+        await batch.commit();
+        batch = writeBatch(state.db);
+        ops = 0;
+      }
+    }
+
+    if (ops > 0) await batch.commit();
+    setCleanupMessage(`Archiving breakfast_logs... archived/deleted ${deleted} row(s).`);
+    if (snap.size < batchSize) break;
+    await pause(25);
+  }
+
+  return { archived, deleted };
+}
+
+function pause(ms = 0) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 function renderLogsTable() {
+  if (!els.logsBody) return;
   if (!state.logRows.length) {
     els.logsBody.innerHTML = `<tr><td colspan="11" class="empty">No logs found</td></tr>`;
     return;
@@ -3288,6 +3590,7 @@ function autoResetScanInput() {
 }
 
 function refreshLogsSoon() {
+  if (PAGE_MODE === "fo_assign" || getActiveTabId() !== "logsTab") return;
   clearTimeout(state.refreshLogsTimer);
   state.refreshLogsTimer = setTimeout(() => {
     refreshLogs().catch((error) => {
