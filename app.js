@@ -35,6 +35,9 @@ const DAILY_TABLE_LIMIT = 800;
 const LIVE_LOG_LIMIT = 40;
 const FO_ASSIGN_LOG_LIMIT = 60;
 const HISTORY_LOG_LIMIT = 300;
+const CONFIG_CACHE_TTL_MS = 2 * 60 * 1000;
+const GUEST_DAILY_LOOKUP_CACHE_TTL_MS = 2 * 60 * 1000;
+const GUEST_DAILY_SLOW_FALLBACK_LIMIT = 1200;
 
 const els = {
   firebaseStatus: $("firebaseStatus"),
@@ -167,6 +170,7 @@ const state = {
   auth: null,
   authUid: "",
   config: { ...DEFAULT_CONFIG },
+  configLoadedAt: 0,
   operator: loadOperator(),
   uploadRows: [],
   importedGuestRows: [],
@@ -520,6 +524,11 @@ async function ensureConfig() {
       updated_at: serverTimestamp(),
       updated_by: state.operator.userId,
     });
+    state.config = { ...DEFAULT_CONFIG };
+    state.configLoadedAt = Date.now();
+  } else {
+    state.config = { ...DEFAULT_CONFIG, ...snap.data() };
+    state.configLoadedAt = Date.now();
   }
 }
 
@@ -544,6 +553,7 @@ async function loadSettingsFromFirestore() {
     }
 
     state.config = loaded;
+    state.configLoadedAt = Date.now();
     applyConfigToForm();
     syncUploadDateFromConfig();
     activateDataForCurrentView();
@@ -569,6 +579,7 @@ async function saveSettingsToFirestore() {
     };
     await setDoc(doc(state.db, "settings", "app_config"), payload, { merge: true });
     state.config = { ...state.config, ...payload };
+    state.configLoadedAt = Date.now();
     applyConfigToForm();
     activateDataForCurrentView();
     scheduleGuestDailyMidnightCleanup();
@@ -665,7 +676,9 @@ async function previewUploadFile() {
     const rows = await readSheetFile(file);
     state.uploadRows = normalizeUploadRows(rows);
     renderUploadPreview();
-    setMessage(els.uploadMessage, `Preview loaded: ${state.uploadRows.length} unique room row(s). Duplicate room rows were merged automatically.`);
+    const warningCount = state.uploadRows.filter((row) => row.upload_warning).length;
+    const warningText = warningCount ? ` · ${warningCount} row(s) need package review` : "";
+    setMessage(els.uploadMessage, `Preview loaded: ${state.uploadRows.length} unique room row(s). Duplicate room rows were merged automatically${warningText}.`);
   } catch (error) {
     console.error(error);
     setMessage(els.uploadMessage, error.message || "Failed to preview file", true);
@@ -693,6 +706,8 @@ async function importUploadRows() {
         doc_id: docId,
         business_date: businessDate,
         room_no: row.room_no,
+        room_key: normalizeRoomNo(row.room_no),
+        lookup_key: docId,
         guest_name: row.guest_name,
         pax: row.pax,
         package: row.package,
@@ -700,6 +715,8 @@ async function importUploadRows() {
         special_package: row.special_package || "",
         breakfast_eligible: row.breakfast_eligible,
         source: "daily_upload",
+        import_version: "v1.3-performance-accuracy",
+        upload_warning: row.upload_warning || "",
         uploaded_at: serverTimestamp(),
         uploaded_by: state.operator.userId,
         notes: row.notes || "",
@@ -721,6 +738,7 @@ async function importUploadRows() {
     }, { merge: true });
 
     state.config.current_business_date = businessDate;
+    state.configLoadedAt = Date.now();
     applyConfigToForm();
     els.uploadBusinessDate.value = businessDate;
     activateDataForCurrentView();
@@ -1042,7 +1060,7 @@ function renderUploadPreview() {
         <td>${escapeHtml(row.room_no)}</td>
         <td>${escapeHtml(row.guest_name)}</td>
         <td>${row.pax}</td>
-        <td>${escapeHtml(row.package)}</td>
+        <td>${escapeHtml(row.package)}${row.upload_warning ? `<div class="muted-inline">${escapeHtml(row.upload_warning)}</div>` : ""}</td>
         <td>${isBreakfastEligibleRecord(row) ? "Yes" : "No"}</td>
       </tr>
     `)
@@ -1121,7 +1139,7 @@ function renderImportedGuestData(errorText = "") {
         <td>${escapeHtml(row.room_no || "")}</td>
         <td>${escapeHtml(row.guest_name || "")}</td>
         <td>${Number(row.pax || 0)}</td>
-        <td>${escapeHtml(row.breakfast_package || row.package || "")}</td>
+        <td>${escapeHtml(row.breakfast_package || row.package || "")}${row.upload_warning ? `<div class="muted-inline">${escapeHtml(row.upload_warning)}</div>` : ""}</td>
         <td>${escapeHtml(row.special_package || "")}</td>
         <td>${isBreakfastEligibleRecord(row) ? "Yes" : "No"}</td>
       </tr>
@@ -1455,6 +1473,7 @@ async function handleScanValidate() {
       roomNoInput: null,
       checkinMode: state.config.checkin_mode || "auto",
       actualPaxInput: els.scanActualPax.value || null,
+      configOverride: state.config,
     });
 
     state.currentScanResult = result;
@@ -1522,6 +1541,7 @@ async function handleManualRoomValidate() {
       manualGuestNameInput: els.scanManualGuestName?.value || "",
       checkinMode: state.config.checkin_mode || "auto",
       actualPaxInput: els.scanActualPax.value || null,
+      configOverride: state.config,
     });
 
     state.currentScanResult = result;
@@ -1575,6 +1595,7 @@ async function handleManualConfirm() {
       cardCodeInput: state.restaurantInputMode === "card" ? els.scanCardCode.value : null,
       roomNoInput: state.restaurantInputMode === "room" ? (els.scanManualRoomNo?.value || state.currentScanResult?.room_no || "") : null,
       actualPaxInput: els.scanActualPax.value || null,
+      configOverride: state.config,
     });
     state.currentScanResult = result;
     if (result?.log_id) state.selectedLiveLogId = result.log_id;
@@ -2647,7 +2668,7 @@ async function clearCardTx({ db, userId, cardCodeInput }) {
   });
 }
 
-async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput = null, manualGuestNameInput = "", actualPaxInput = null }) {
+async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput = null, manualGuestNameInput = "", actualPaxInput = null, configOverride = null }) {
   const cardCode = normalizeCardCode(cardCodeInput);
   const manualRoomNo = normalizeRoomNo(roomNoInput);
   const manualGuestName = normalizeGuestName(manualGuestNameInput);
@@ -2656,7 +2677,7 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput
     throw makeAppError("CARD_OR_ROOM_REQUIRED", "Please scan card or enter room number");
   }
 
-  const config = await getAppConfig(db);
+  const config = configOverride ? { ...DEFAULT_CONFIG, ...configOverride } : await getAppConfig(db);
   const businessDate = config.current_business_date;
 
   let roomNo = manualRoomNo;
@@ -2792,15 +2813,15 @@ async function validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput
   };
 }
 
-async function confirmRoPaidCheckinTx({ db, logId, userId, deviceName, sourceResult, amount, actualPaxInput = null }) {
-  const config = await getAppConfig(db);
+async function confirmRoPaidCheckinTx({ db, logId, userId, deviceName, sourceResult, amount, actualPaxInput = null, configOverride = null }) {
+  const config = configOverride ? { ...DEFAULT_CONFIG, ...configOverride } : await getAppConfig(db);
   const businessDate = sourceResult?.business_date || config.current_business_date;
   const roomNo = normalizeRoomNo(sourceResult?.room_no);
   if (!roomNo) throw makeAppError("ROOM_REQUIRED", "Room number is required");
 
   // Robust Daily lookup: the Daily table is queried by business_date, but older imports may
   // have non-canonical document IDs. Do not depend on guest_daily/{date_room} here.
-  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: false, allowSlowFallback: true });
+  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: true, allowSlowFallback: true });
   if (!guestLookup?.exists) throw makeAppError("ROOM_NOT_FOUND", "Room not found in today's guest list");
   const guest = guestLookup.data || guestLookup.snap?.data() || {};
 
@@ -2955,7 +2976,7 @@ async function writeScanLog(db, payload) {
   return ref;
 }
 
-async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoInput = null, actualPaxInput = null }) {
+async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoInput = null, actualPaxInput = null, configOverride = null }) {
   const cardCode = normalizeCardCode(cardCodeInput);
   const manualRoomNo = normalizeRoomNo(roomNoInput);
   const isManualRoom = !!manualRoomNo;
@@ -2963,7 +2984,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
     throw makeAppError("CARD_OR_ROOM_REQUIRED", "Please scan card or enter room number");
   }
 
-  const config = await getAppConfig(db);
+  const config = configOverride ? { ...DEFAULT_CONFIG, ...configOverride } : await getAppConfig(db);
   const businessDate = config.current_business_date;
 
   let roomNo = manualRoomNo;
@@ -2982,7 +3003,7 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
   // Robust Daily lookup: the screen that shows Daily uses a query by business_date.
   // The check-in must use the same logic instead of only reading guest_daily/{date_room},
   // because older/partial imports can show B217 in Daily but store it under a different doc ID.
-  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: false, allowSlowFallback: true });
+  const guestLookup = await getGuestDailyLookup(db, businessDate, roomNo, { repair: true, allowSlowFallback: true });
   if (!guestLookup?.exists) {
     throw makeAppError("ROOM_NOT_FOUND", "Room not found in today's guest list");
   }
@@ -3084,18 +3105,18 @@ async function confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoI
   });
 }
 
-async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, roomNoInput = null, manualGuestNameInput = "", checkinMode, actualPaxInput = null }) {
+async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, roomNoInput = null, manualGuestNameInput = "", checkinMode, actualPaxInput = null, configOverride = null }) {
   const mode = checkinMode || "auto";
 
   // Manual mode still validates first because the user must press Confirm afterward.
   if (mode === "manual") {
-    return validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput, manualGuestNameInput, actualPaxInput });
+    return validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput, manualGuestNameInput, actualPaxInput, configOverride });
   }
 
   // Auto mode: write the check-in directly in one transaction.
   // Previous flow validated first, then ran the transaction, which doubled Firestore reads on every successful scan.
   try {
-    return await confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput });
+    return await confirmCheckinTx({ db, userId, deviceName, cardCodeInput, roomNoInput, actualPaxInput, configOverride });
   } catch (error) {
     // For expected business-rule failures, fall back to validation so the UI still shows a full result
     // and failed room attempts are logged as before.
@@ -3113,12 +3134,12 @@ async function handleRestaurantScan({ db, userId, deviceName, cardCodeInput, roo
       throw error;
     }
 
-    return validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput, manualGuestNameInput, actualPaxInput });
+    return validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput, manualGuestNameInput, actualPaxInput, configOverride });
   }
 }
 
-async function validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput = null, manualGuestNameInput = "", actualPaxInput = null }) {
-  const validation = await validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput, manualGuestNameInput, actualPaxInput });
+async function validateAndLogScanFailure({ db, userId, deviceName, cardCodeInput, roomNoInput = null, manualGuestNameInput = "", actualPaxInput = null, configOverride = null }) {
+  const validation = await validateScan({ db, userId, deviceName, cardCodeInput, roomNoInput, manualGuestNameInput, actualPaxInput, configOverride });
 
   if (!validation.ok) {
     const shouldSkipLog = !normalizeRoomNo(validation.room_no);
@@ -3155,10 +3176,11 @@ function normalizeUploadRows(rows) {
 
     const existing = mergedByRoom.get(mapped.room_no);
     if (!existing) {
-      mergedByRoom.set(mapped.room_no, {
+      const initial = syncPackageState({
         ...mapped,
         guest_names: splitGuestNames(mapped.guest_name),
       });
+      mergedByRoom.set(mapped.room_no, initial);
       continue;
     }
 
@@ -3166,39 +3188,83 @@ function normalizeUploadRows(rows) {
     existing.guest_names = mergedGuestNames;
     existing.guest_name = mergedGuestNames.join(" / ");
     existing.pax = Math.max(existing.pax, mapped.pax, mergedGuestNames.length || 0);
-    existing.package = pickBetterPackage(existing.package, mapped.package);
-    existing.breakfast_package = existing.breakfast_package || mapped.breakfast_package || mapped.package;
-    existing.special_package = existing.special_package || mapped.special_package || "";
-    existing.breakfast_eligible = existing.breakfast_eligible || mapped.breakfast_eligible;
+
+    const bestPackage = pickBetterPackage(existing.package, mapped.package);
+    existing.package = bestPackage || existing.package || mapped.package || "";
+    existing.breakfast_package = existing.package;
+    existing.special_package = mergeSpecialPackage(existing.special_package, mapped.special_package);
+    existing._explicit_breakfast_eligible = existing._explicit_breakfast_eligible || mapped._explicit_breakfast_eligible;
+    existing.breakfast_eligible = deriveBreakfastEligible(existing.package);
+    existing.upload_warning = [existing.upload_warning, mapped.upload_warning].filter(Boolean).filter((v, i, arr) => arr.indexOf(v) === i).join(" | ");
     existing.notes = [existing.notes, mapped.notes].filter(Boolean).join(" | ");
   }
 
   return Array.from(mergedByRoom.values())
-    .map(({ guest_names, ...row }) => row)
+    .map(({ guest_names, ...row }) => {
+      const synced = syncPackageState(row);
+      const { _explicit_breakfast_eligible, ...cleanRow } = synced;
+      return cleanRow;
+    })
     .sort((a, b) => a.room_no.localeCompare(b.room_no));
 }
 
+function mergeSpecialPackage(a, b) {
+  const left = normalizeSpecialPackage(a);
+  const right = normalizeSpecialPackage(b);
+  if (left === "EXECUTIVE" || right === "EXECUTIVE") return "EXECUTIVE";
+  return left || right || "";
+}
+
+function syncPackageState(row) {
+  const pkg = normalizePackage(row?.package || row?.breakfast_package || "");
+  const synced = {
+    ...row,
+    package: pkg,
+    breakfast_package: pkg,
+  };
+
+  if (pkg === "UNKNOWN") {
+    synced.breakfast_eligible = false;
+    synced.upload_warning = synced.upload_warning || "Unknown package: review before use";
+  } else if (synced._explicit_breakfast_eligible === true) {
+    synced.breakfast_eligible = normalizeBoolean(synced.breakfast_eligible);
+  } else {
+    synced.breakfast_eligible = deriveBreakfastEligible(pkg);
+  }
+  return synced;
+}
+
 function splitGuestNames(raw) {
-  return String(raw || "")
+  return cleanGuestName(raw)
     .split(/[\/;&|]+/)
-    .map((part) => part.trim())
+    .map((part) => cleanGuestName(part))
     .filter(Boolean);
+}
+
+function cleanGuestName(raw) {
+  return String(raw || "")
+    .replace(/\bRes\.\s*Comments\b.*$/i, "")
+    .replace(/\bCashiering\b.*$/i, "")
+    .replace(/\bReservation\s*Comments\b.*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function mergeGuestNameArrays(left, right) {
   const seen = new Set();
   const result = [];
   for (const name of [...(left || []), ...(right || [])]) {
-    const key = name.toUpperCase();
+    const cleaned = cleanGuestName(name);
+    const key = cleaned.toUpperCase();
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    result.push(name);
+    result.push(cleaned);
   }
   return result;
 }
 
 function pickBetterPackage(a, b) {
-  return packageRank(b) > packageRank(a) ? b : a;
+  return packageRank(b) > packageRank(a) ? normalizePackage(b) : normalizePackage(a);
 }
 
 function packageRank(pkg) {
@@ -3217,8 +3283,10 @@ function packageRank(pkg) {
       return 20;
     case "RO":
       return 10;
+    case "UNKNOWN":
+      return 1;
     default:
-      return 15;
+      return 0;
   }
 }
 
@@ -3235,22 +3303,20 @@ function mapUploadRow(raw) {
   const guestNameRaw = firstDefined(source, [
     "guestname", "guest", "name", "fullname", "guest_name", "customername"
   ]);
-  const guestName = String(guestNameRaw || "").trim() || roomNo;
+  const guestName = cleanGuestName(guestNameRaw) || roomNo;
 
   const paxRaw = firstDefined(source, [
     "pax", "adults", "adult", "guestcount", "guests", "heads", "persons"
   ]);
   const pax = Math.max(0, Number(paxRaw || 0)) || 1;
 
-  const packageRaw = String(firstDefined(source, [
-    "package", "mealplan", "meal_plan", "ratecode", "plan", "boardtype",
-    "rorb", "ro_rb", "roompackage", "breakfastpackage", "board", "boardbasis"
-  ]) || "").trim();
-  const pkg = normalizePackage(packageRaw);
+  const packageInfo = extractPackageInfo(source);
+  const pkg = packageInfo.package;
 
   let breakfastEligible;
   const explicitEligible = firstDefined(source, ["breakfasteligible", "eligible", "hasbreakfast"]);
-  if (explicitEligible !== undefined && explicitEligible !== "") {
+  const hasExplicitBreakfastEligible = explicitEligible !== undefined && explicitEligible !== "";
+  if (hasExplicitBreakfastEligible) {
     breakfastEligible = normalizeBoolean(explicitEligible);
   } else {
     breakfastEligible = deriveBreakfastEligible(pkg);
@@ -3263,7 +3329,7 @@ function mapUploadRow(raw) {
   const notes = String(firstDefined(source, ["notes", "remark", "remarks"]) || "").trim();
   const specialPackage = normalizeSpecialPackage(specialPackageRaw || (pkg === "EXECUTIVE" ? "EXECUTIVE" : ""));
 
-  return {
+  return syncPackageState({
     room_no: roomNo,
     guest_name: guestName,
     pax,
@@ -3271,8 +3337,31 @@ function mapUploadRow(raw) {
     breakfast_package: pkg,
     special_package: specialPackage,
     breakfast_eligible: breakfastEligible,
+    _explicit_breakfast_eligible: hasExplicitBreakfastEligible,
+    upload_warning: packageInfo.warning,
     notes,
-  };
+  });
+}
+
+function extractPackageInfo(source) {
+  const packageKeys = [
+    "breakfastpackage", "mealplan", "meal_plan", "boardtype", "boardbasis", "board",
+    "rorb", "ro_rb", "roompackage", "package", "plan", "ratecode"
+  ];
+  const candidates = packageKeys
+    .map((key) => firstDefined(source, [key]))
+    .filter((value) => value !== undefined && value !== null && String(value).trim() !== "");
+
+  for (const value of candidates) {
+    const pkg = normalizePackage(value);
+    if (pkg && pkg !== "UNKNOWN") return { package: pkg, warning: "" };
+  }
+
+  if (candidates.length) {
+    return { package: "UNKNOWN", warning: `Unknown package: ${String(candidates[0]).trim()}` };
+  }
+
+  return { package: "UNKNOWN", warning: "Missing package column/value" };
 }
 
 function normalizeHeader(value) {
@@ -3289,26 +3378,32 @@ function firstDefined(obj, keys) {
 function normalizePackage(raw) {
   const value = String(raw || "").trim().toUpperCase();
   if (!value) return "";
-  const compact = value.replace(/\s+/g, " ");
-  if (["RO", "ROOM ONLY", "OTARO"].includes(compact) || /^OTARO(\b|[^A-Z0-9])/.test(compact)) return "RO";
-  if (["RB", "ROOM BREAKFAST", "ROOM WITH BREAKFAST", "ROOM + BREAKFAST"].includes(compact)) return "RB";
-  if (["BB", "BED BREAKFAST", "BED & BREAKFAST", "B&B", "BED AND BREAKFAST"].includes(compact)) return "BB";
-  if (["HB", "HALF BOARD"].includes(compact)) return "HB";
-  if (["FB", "FULL BOARD"].includes(compact)) return "FB";
-  if (["AI", "AIP", "ALL INCLUSIVE", "ALL-INCLUSIVE"].includes(compact)) return "AI";
-  if (["EXEC", "EXECUTIVE", "EXBF", "EXECUTIVE BREAKFAST", "EXECUTIVE BF"].includes(compact)) return "EXECUTIVE";
-  return compact;
+  const compact = value.replace(/\s+/g, " ").trim();
+  const tokens = compact.split(/[^A-Z0-9]+/).filter(Boolean);
+  const hasToken = (...values) => tokens.some((token) => values.includes(token));
+  const hasPrefixToken = (...prefixes) => tokens.some((token) => prefixes.some((prefix) => token.startsWith(prefix)));
+
+  if (hasToken("RO") || hasPrefixToken("OTARO") || /ROOM\s*ONLY/.test(compact)) return "RO";
+  if (hasToken("RB") || hasPrefixToken("OTARB") || /ROOM\s*(WITH|\+)?\s*BREAKFAST/.test(compact)) return "RB";
+  if (hasToken("BB") || compact === "B&B" || /BED\s*(AND|&)?\s*BREAKFAST/.test(compact)) return "BB";
+  if (hasToken("HB") || /HALF\s*BOARD/.test(compact)) return "HB";
+  if (hasToken("FB") || /FULL\s*BOARD/.test(compact)) return "FB";
+  if (hasToken("AI", "AIP") || /ALL[-\s]*INCLUSIVE/.test(compact)) return "AI";
+  if (hasToken("EXEC", "EXBF") || /EXECUTIVE(\s*BREAKFAST|\s*BF)?/.test(compact)) return "EXECUTIVE";
+  return "UNKNOWN";
 }
 
 function normalizeSpecialPackage(raw) {
   const value = String(raw || "").trim().toUpperCase();
   if (!value) return "";
-  if (["EXEC", "EXECUTIVE", "EXBF", "EXECUTIVE BREAKFAST", "EXECUTIVE BF"].includes(value)) return "EXECUTIVE";
+  const normalized = normalizePackage(value);
+  if (normalized === "EXECUTIVE") return "EXECUTIVE";
   return value;
 }
 
 function deriveBreakfastEligible(pkg) {
-  return !["", "RO"].includes(pkg);
+  const normalized = normalizePackage(pkg);
+  return !["", "RO", "UNKNOWN"].includes(normalized);
 }
 
 function isRoomOnlyPackage(rowOrPackage) {
@@ -3359,7 +3454,7 @@ function getCachedGuestDailyLookup(businessDate, roomNo) {
   const cached = state.guestDailyLookupCache?.get(key);
   if (!cached) return null;
   // Keep the cache intentionally short so FO imports / corrections are picked up quickly.
-  if (Date.now() - Number(cached.cached_at || 0) > 30_000) {
+  if (Date.now() - Number(cached.cached_at || 0) > GUEST_DAILY_LOOKUP_CACHE_TTL_MS) {
     state.guestDailyLookupCache.delete(key);
     return null;
   }
@@ -3405,18 +3500,44 @@ async function getGuestDailyLookup(db, businessDate, roomNo, options = {}) {
     return found;
   }
 
-  // Fast fallback: look up only this room, then confirm the business date.
-  // This avoids the previous slow path that loaded every room for the day on every scan.
-  const byRoomSnap = await getDocs(query(
+  // Fast fallback 1: new imports save lookup_key = businessDate_roomNo.
+  // This is a single-field query and avoids scanning the whole Daily list.
+  const byLookupKeySnap = await getDocs(query(
     collection(db, "guest_daily"),
-    where("room_no", "==", normalizedRoomNo),
-    limit(80)
+    where("lookup_key", "==", canonicalId),
+    limit(5)
   ));
 
-  let matchedDoc = byRoomSnap.docs.find((item) => {
+  let matchedDoc = byLookupKeySnap.docs.find((item) => {
     const data = item.data() || {};
     return String(data.business_date || "") === businessDate && normalizeRoomNo(data.room_no || "") === normalizedRoomNo;
   });
+
+  // Fast fallback 2: look up only this normalized room key, then confirm business date.
+  if (!matchedDoc) {
+    const byRoomKeySnap = await getDocs(query(
+      collection(db, "guest_daily"),
+      where("room_key", "==", normalizedRoomNo),
+      limit(80)
+    ));
+    matchedDoc = byRoomKeySnap.docs.find((item) => {
+      const data = item.data() || {};
+      return String(data.business_date || "") === businessDate && normalizeRoomNo(data.room_no || "") === normalizedRoomNo;
+    });
+  }
+
+  // Legacy fallback: older imports did not have room_key. Keep this limited.
+  if (!matchedDoc) {
+    const byRoomSnap = await getDocs(query(
+      collection(db, "guest_daily"),
+      where("room_no", "==", normalizedRoomNo),
+      limit(80)
+    ));
+    matchedDoc = byRoomSnap.docs.find((item) => {
+      const data = item.data() || {};
+      return String(data.business_date || "") === businessDate && normalizeRoomNo(data.room_no || "") === normalizedRoomNo;
+    });
+  }
 
   // Compatibility fallback for older imports that kept spaces/dashes/lowercase in room_no.
   // It runs only after the fast room query fails, so normal scans stay fast.
@@ -3424,7 +3545,7 @@ async function getGuestDailyLookup(db, businessDate, roomNo, options = {}) {
     const byDateSnap = await getDocs(query(
       collection(db, "guest_daily"),
       where("business_date", "==", businessDate),
-      limit(5000)
+      limit(GUEST_DAILY_SLOW_FALLBACK_LIMIT)
     ));
     matchedDoc = byDateSnap.docs.find((item) => {
       const data = item.data() || {};
@@ -3446,6 +3567,8 @@ async function getGuestDailyLookup(db, businessDate, roomNo, options = {}) {
       doc_id: canonicalId,
       business_date: businessDate,
       room_no: normalizedRoomNo,
+      room_key: normalizedRoomNo,
+      lookup_key: canonicalId,
       repaired_from_doc_id: matchedDoc.id,
       repaired_at: serverTimestamp(),
     }, { merge: true });
@@ -3526,10 +3649,19 @@ function makeAppError(code, message) {
   return err;
 }
 
-async function getAppConfig(db) {
+async function getAppConfig(db, options = {}) {
+  const cachedConfig = { ...DEFAULT_CONFIG, ...(state.config || {}) };
+  const cacheAge = Date.now() - Number(state.configLoadedAt || 0);
+  if (!options.force && cachedConfig.current_business_date && cacheAge >= 0 && cacheAge < CONFIG_CACHE_TTL_MS) {
+    return cachedConfig;
+  }
+
   const snap = await getDoc(doc(db, "settings", "app_config"));
   if (!snap.exists()) throw makeAppError("CONFIG_NOT_FOUND", "App config not found");
-  return { ...DEFAULT_CONFIG, ...snap.data() };
+  const loaded = { ...DEFAULT_CONFIG, ...snap.data() };
+  state.config = loaded;
+  state.configLoadedAt = Date.now();
+  return loaded;
 }
 
 function friendlyError(error) {

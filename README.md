@@ -1,7 +1,16 @@
-# Laya Breakfast Card Check-in v1.2 Room Check-in Stability
+# Laya Breakfast Card Check-in v1.3 Performance & Import Accuracy
 
 Static web app for GitHub Pages + Firebase.
 
+
+## v1.3 performance & import accuracy updates
+- Added `lookup_key` and `room_key` to imported `guest_daily` documents so check-in can find rooms by direct keys instead of scanning the whole daily list.
+- Added short config cache so restaurant check-in does not read `settings/app_config` on every scan.
+- Increased guest lookup cache TTL to reduce repeated reads for the same room during busy breakfast service.
+- Import now keeps `package` and `breakfast_package` synced when duplicate room rows are merged.
+- Import now treats unknown / missing package values as review-required instead of silently marking them eligible.
+- Package detection is stricter for RO / OTARO / RB / BB / HB / FB / AI / Executive to reduce false matches from group/rate text.
+- Guest names are cleaned from common INH noise such as `Res. Comments` and `Cashiering`.
 
 ## v1.2 room check-in stability updates
 - Fixed focus returning to Manual Room after a manual room check-in. The next scan now always returns to Card Code by default.
@@ -65,12 +74,13 @@ The importer tries to map these headers:
 - room / room_no / room number
 - guest_name / guest / name
 - pax / adults / guest_count / heads
-- package / mealplan / meal_plan / ratecode
+- breakfast_package / mealplan / board / package / ratecode
 
 ## Notes
 - Package eligibility defaults:
-  - RO = false
+  - RO / OTARO = false and will trigger payment flow
   - RB / BB / HB / FB / AI / EXECUTIVE = true
+  - UNKNOWN / blank package = false and must be reviewed before use
 - `room_checkin_daily/{business_date_room_no}` is the main duplicate lock
 - `breakfast_logs` keeps all scan results
 
