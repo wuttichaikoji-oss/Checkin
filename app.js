@@ -477,6 +477,7 @@ function bindEvents() {
   els.saveOperatorBtn.addEventListener("click", saveOperatorInfo);
 
   els.restaurantLiveLogsBody.addEventListener("click", handleRestaurantLiveLogsClick);
+  els.restaurantLiveLogsBody.addEventListener("keydown", handleRestaurantLiveLogsKeydown);
   els.logsBody.addEventListener("click", handleLogsTableClick);
 
   const convertReloadBtn = $("convertReloadBtn");
@@ -1971,6 +1972,23 @@ function startRestaurantLiveLogs() {
 }
 
 function handleRestaurantLiveLogsClick(event) {
+  const actualInput = event.target.closest("[data-actual-pax-log-id]");
+  if (actualInput) {
+    event.stopPropagation();
+    return;
+  }
+
+  const saveActualBtn = event.target.closest("[data-save-actual-log-id]");
+  if (saveActualBtn) {
+    event.stopPropagation();
+    const logId = saveActualBtn.dataset.saveActualLogId || "";
+    if (logId) {
+      const input = els.restaurantLiveLogsBody.querySelector(`[data-actual-pax-log-id="${cssEscape(logId)}"]`);
+      handleUpdateLogActualPax(logId, input?.value ?? "", "live");
+    }
+    return;
+  }
+
   const deleteBtn = event.target.closest("[data-delete-log-id]");
   if (deleteBtn) {
     const logId = deleteBtn.dataset.deleteLogId || "";
@@ -1990,6 +2008,109 @@ function handleRestaurantLiveLogsClick(event) {
   renderScanResult(row);
   renderRestaurantLiveLogs();
   setMessage(els.scanMessage, `Showing detail from live log: ${row.card_code || row.room_no || logId}`);
+}
+
+function handleRestaurantLiveLogsKeydown(event) {
+  const input = event.target.closest("[data-actual-pax-log-id]");
+  if (!input) return;
+  if (event.key === "Enter") {
+    event.preventDefault();
+    event.stopPropagation();
+    const logId = input.dataset.actualPaxLogId || "";
+    if (logId) handleUpdateLogActualPax(logId, input.value, "live");
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    renderRestaurantLiveLogs();
+    focusScanInput();
+  }
+}
+
+async function handleUpdateLogActualPax(logId, rawValue, source = "live") {
+  try {
+    if (!state.db) throw new Error("Firebase is not ready.");
+    const row = [...state.restaurantLiveRows, ...state.logRows].find((item) => item.id === logId) || null;
+    if (!row) throw new Error("Log row not found. Please refresh and try again.");
+
+    const oldActual = Number(row.actual_pax || 0);
+    const actualPax = parseEditableActualPax(rawValue, oldActual);
+    const editor = els.restaurantLiveLogsBody?.querySelector(`[data-actual-pax-log-id="${cssEscape(logId)}"]`);
+    const saveBtn = els.restaurantLiveLogsBody?.querySelector(`[data-save-actual-log-id="${cssEscape(logId)}"]`);
+    if (editor) editor.disabled = true;
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Saving...";
+    }
+
+    const logUpdate = {
+      actual_pax: actualPax,
+      actual_pax_edited: true,
+      actual_pax_edited_at: serverTimestamp(),
+      actual_pax_edited_by: state.operator.userId || "",
+      actual_pax_previous: oldActual,
+    };
+    await updateDoc(doc(state.db, "breakfast_logs", logId), logUpdate);
+
+    const businessDate = row.business_date || state.config.current_business_date || todayInBangkok();
+    const roomNo = normalizeRoomNo(row.room_no || "");
+    if (businessDate && roomNo) {
+      try {
+        const checkinRef = doc(state.db, "room_checkin_daily", buildDateRoomId(businessDate, roomNo));
+        const checkinSnap = await getDoc(checkinRef);
+        if (checkinSnap.exists()) {
+          await updateDoc(checkinRef, {
+            actual_pax: actualPax,
+            actual_pax_edited: true,
+            actual_pax_edited_at: serverTimestamp(),
+            actual_pax_edited_by: state.operator.userId || "",
+            actual_pax_source_log_id: logId,
+          });
+        }
+      } catch (error) {
+        console.warn("Could not sync actual pax to room_checkin_daily", error);
+      }
+    }
+
+    const patchLocal = (item) => item.id === logId
+      ? {
+          ...item,
+          actual_pax: actualPax,
+          actual_pax_edited: true,
+          actual_pax_edited_by: state.operator.userId || "",
+          actual_pax_previous: oldActual,
+        }
+      : item;
+    state.restaurantLiveRows = state.restaurantLiveRows.map(patchLocal);
+    state.logRows = state.logRows.map(patchLocal);
+
+    const updatedRow = state.restaurantLiveRows.find((item) => item.id === logId) || state.logRows.find((item) => item.id === logId) || null;
+    if (state.selectedLiveLogId === logId || state.currentScanResult?.log_id === logId || state.currentScanResult?.id === logId) {
+      state.currentScanResult = updatedRow;
+      renderScanResult(updatedRow);
+    }
+    renderRestaurantLiveLogs();
+    if (source === "logs") renderLogsTable();
+    setMessage(els.scanMessage, `Actual pax updated: ${row.room_no || "-"} = ${actualPax}`);
+  } catch (error) {
+    console.error(error);
+    setMessage(els.scanMessage, error.message || "Failed to update actual pax", true);
+    renderRestaurantLiveLogs();
+  }
+}
+
+function parseEditableActualPax(raw, fallback = 0) {
+  const text = String(raw ?? "").trim();
+  if (text === "") throw new Error("Please enter Actual pax.");
+  const num = Number(text);
+  if (!Number.isFinite(num) || num < 0) throw new Error("Actual pax must be 0 or more.");
+  if (num > 99) throw new Error("Actual pax is too high. Please check the number.");
+  return Math.floor(num);
+}
+
+function cssEscape(value) {
+  if (window.CSS && typeof window.CSS.escape === "function") return window.CSS.escape(String(value));
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 }
 
 function handleLogsTableClick(event) {
@@ -2022,7 +2143,7 @@ function renderRestaurantLiveLogs() {
         <td>${escapeHtml(row.room_no || "")}</td>
         <td>${escapeHtml(row.guest_name || "")}</td>
         <td>${row.entitled_pax ?? ""}</td>
-        <td>${row.actual_pax ?? ""}</td>
+        <td class="actual-pax-cell">${renderActualPaxEditor(row)}</td>
         <td>${escapeHtml(row.package || "")}</td>
         <td>${escapeHtml(row.scanned_by || "")}</td>
         <td>${escapeHtml(getLogMessage(row))}</td>
@@ -2030,6 +2151,27 @@ function renderRestaurantLiveLogs() {
       </tr>
     `;
   }).join("");
+}
+
+function renderActualPaxEditor(row) {
+  const logId = row.id || "";
+  const value = row.actual_pax ?? "";
+  const editedMark = row.actual_pax_edited ? `<span class="actual-pax-edited" title="Edited actual pax">edited</span>` : "";
+  return `
+    <div class="actual-pax-editor" title="แก้จำนวนลูกค้าที่เข้าใช้บริการจริง แล้วกด Save หรือ Enter">
+      <input
+        type="number"
+        min="0"
+        max="99"
+        step="1"
+        inputmode="numeric"
+        value="${escapeHtml(value)}"
+        data-actual-pax-log-id="${escapeHtml(logId)}"
+        aria-label="Actual pax for ${escapeHtml(row.room_no || "room")}">
+      <button class="table-action save actual-save" type="button" data-save-actual-log-id="${escapeHtml(logId)}" title="Save actual pax">Save</button>
+      ${editedMark}
+    </div>
+  `;
 }
 
 async function refreshLogs() {

@@ -1,7 +1,13 @@
-# Laya Breakfast Card Check-in v1.3 Performance & Import Accuracy
+# Laya Breakfast Card Check-in v1.4 Actual Pax Edit
 
 Static web app for GitHub Pages + Firebase.
 
+
+## v1.4 actual pax edit update
+- Live Scan Log: ช่อง `Actual` แก้ไขจำนวนลูกค้าที่เข้าใช้บริการจริงได้ทันที
+- กด `Save` หรือกด Enter เพื่อบันทึกลง `breakfast_logs`
+- ถ้าห้องนั้นเช็กอินแล้ว ระบบ sync ค่า `actual_pax` ไปที่ `room_checkin_daily` ด้วย เพื่อให้รายงานใช้ตัวเลขจริงล่าสุด
+- มี mark `edited` ในแถวที่ถูกแก้ไข
 
 ## v1.3 performance & import accuracy updates
 - Added `lookup_key` and `room_key` to imported `guest_daily` documents so check-in can find rooms by direct keys instead of scanning the whole daily list.
